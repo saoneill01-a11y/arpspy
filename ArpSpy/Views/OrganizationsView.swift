@@ -659,6 +659,9 @@ struct SurveySetupView: View {
     @State private var dhcpRange = ""
     @State private var steps = Set(SurveyRunner.StepKind.allCases)
     @State private var loaded = false
+    /// This Mac's network, and whether the Range was typed by hand (then it no longer follows the DHCP range).
+    @State private var thisNetwork = ""
+    @State private var rangeEdited = false
 
     private var existing: Organization? { orgs.org(orgID) }
     private var orgSites: [Site] { orgID.map { model.sites(in: $0) } ?? [] }
@@ -698,7 +701,8 @@ struct SurveySetupView: View {
                 }
                 if siteID == nil {
                     TextField("Scan name", text: $siteName, prompt: Text("Main office"))
-                    TextField("Range", text: $range).font(.system(.body, design: .monospaced))
+                    TextField("Range", text: Binding(get: { range }, set: { range = $0; rangeEdited = true }))
+                        .font(.system(.body, design: .monospaced))
                     if !range.isEmpty && !rangeOK { Text("That isn’t a valid IP range.").font(.caption).foregroundStyle(.red) }
                     if let o = existing {
                         Text("Uses \(o.name)’s name server and DHCP range (change them in Organizations › Settings).")
@@ -744,13 +748,25 @@ struct SurveySetupView: View {
         .padding(20)
         .frame(minWidth: 480, minHeight: 520)
         .onAppear(perform: load)
+        .onChange(of: dhcpRange) { followOrgNetwork() }
+        .onChange(of: nameServer) { followOrgNetwork() }
+    }
+
+    /// The scan covers the organization's network (from its DHCP range or name server) unless this Mac is on it.
+    private func followOrgNetwork() {
+        guard !rangeEdited else { return }
+        let o = existing
+        range = SurveyRange.suggested(thisNetwork: thisNetwork, dhcpRange: o?.dhcpRange ?? dhcpRange,
+                                      nameServer: o?.nameServer ?? nameServer)
     }
 
     private func load() {
         guard !loaded else { return }
         loaded = true
         let iface = model.interfaces.first { $0.id == model.selectedInterface } ?? model.interfaces.first
-        range = iface?.suggestedRange ?? model.rangeText
+        thisNetwork = iface?.suggestedRange ?? model.rangeText
+        range = thisNetwork
+        followOrgNetwork()
         if let cur = model.currentSite, cur.orgID == orgID, orgID != nil { siteID = cur.id }
         else { siteID = orgSites.first?.id }
         if orgSites.isEmpty { siteID = nil }

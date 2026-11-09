@@ -129,3 +129,21 @@ struct DHCPRange: Equatable, Sendable {
         }.joined(separator: ", ")
     }
 }
+
+/// What a site survey's network scan should cover.
+enum SurveyRange {
+    /// This Mac's network when the organization's DHCP range (or else its name server) is on it, or when neither is
+    /// known. Otherwise the organization's own network: its DHCP range when that's a subnet like 10.0.0.0/24, else
+    /// the /24 around the DHCP range's first address or the name server (a survey run from somewhere else, e.g. over a VPN).
+    static func suggested(thisNetwork: String, dhcpRange: String, nameServer: String) -> String {
+        let dhcp = dhcpRange.trimmingCharacters(in: .whitespaces)
+        let hint: IPv4? = DHCPRange(dhcp).flatMap { $0.spans.first.map { IPv4($0.lowerBound) } }
+            ?? IPv4(nameServer.trimmingCharacters(in: .whitespaces))
+        guard let ip = hint else { return thisNetwork }
+        if let (lo, hi) = try? IPRangeParser.bounds(of: thisNetwork.trimmingCharacters(in: .whitespaces)),
+           (lo...hi).contains(ip.value) { return thisNetwork }
+        if !dhcp.contains(","), !dhcp.contains(" "), let slash = dhcp.firstIndex(of: "/"),
+           let bits = Int(dhcp[dhcp.index(after: slash)...]), bits >= 16, DHCPRange(dhcp) != nil { return dhcp }
+        return "\(IPv4(ip.value & 0xFFFF_FF00))/24"
+    }
+}
