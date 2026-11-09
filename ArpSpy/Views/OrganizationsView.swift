@@ -252,6 +252,17 @@ private struct OrgSettingsBox: View {
                     Text("Read-only community for asking its switches, printers and UPSes their name and model. Only sent on this organization’s networks.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
+                row("Scan style") {
+                    Picker("Scan style", selection: Binding(get: { org.quietScan }, set: { v in orgs.update(org.id) { $0.quietScan = v } })) {
+                        Text("Normal").tag(false)
+                        Text("Quiet").tag(true)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    Text(org.quietScan
+                         ? "Every scan and survey for \(org.name) starts in Quiet: slower, far fewer probes. The survey’s speed test starts unchecked."
+                         : "Quiet sends far fewer probes (for networks with an IDS or touchy devices). You can still switch any scan in the scan bar.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 row("UniFi") {
                     HStack(spacing: 8) {
                         if let c = unifi.controller(forOrg: org.id) {
@@ -771,6 +782,7 @@ struct SurveySetupView: View {
         else { siteID = orgSites.first?.id }
         if orgSites.isEmpty { siteID = nil }
         siteName = orgSites.isEmpty ? "Main office" : ""
+        if existing?.quietScan == true { steps.remove(.speed) }
     }
 
     /// Makes the organization and/or site. Returns their ids.

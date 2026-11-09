@@ -13,7 +13,7 @@ enum TCPProbe {
                       timeout: TimeInterval, flag: CancelFlag) -> Set<UInt32> {
         var alive = Set<UInt32>()
         let jobs = targets.flatMap { t in ports.map { (t.value, $0) } }
-        run(jobs, timeout: timeout, flag: flag, skip: { alive.contains($0) }) { ip, _, open in
+        run(jobs, timeout: timeout, batchSize: 900, flag: flag, skip: { alive.contains($0) }) { ip, _, open in
             _ = open   // open or refused: both mean the device is there
             alive.insert(ip)
         }
@@ -21,10 +21,10 @@ enum TCPProbe {
     }
 
     static func openPorts(_ targets: [IPv4], ports: [UInt16] = Ports.scanList,
-                          timeout: TimeInterval, flag: CancelFlag) -> [UInt32: [UInt16]] {
+                          timeout: TimeInterval, batchSize: Int = 900, flag: CancelFlag) -> [UInt32: [UInt16]] {
         var result: [UInt32: Set<UInt16>] = [:]
         let jobs = targets.flatMap { t in ports.map { (t.value, $0) } }
-        run(jobs, timeout: timeout, flag: flag, skip: { _ in false }) { ip, port, open in
+        run(jobs, timeout: timeout, batchSize: batchSize, flag: flag, skip: { _ in false }) { ip, port, open in
             if open { result[ip, default: []].insert(port) }
         }
         return result.mapValues { $0.sorted() }
@@ -32,11 +32,10 @@ enum TCPProbe {
 
     /// Connects to every (ip, port) in batches and reports each one that answered.
     /// `answered(ip, port, open)`: open = true if the port accepted, false if the device refused.
-    private static func run(_ jobs: [(UInt32, UInt16)], timeout: TimeInterval, flag: CancelFlag,
+    private static func run(_ jobs: [(UInt32, UInt16)], timeout: TimeInterval, batchSize: Int, flag: CancelFlag,
                             skip: (UInt32) -> Bool,
                             answered: (UInt32, UInt16, Bool) -> Void) {
         Sockets.raiseOpenFileLimit()
-        let batchSize = 900
         var index = 0
 
         while index < jobs.count, !flag.isCancelled {

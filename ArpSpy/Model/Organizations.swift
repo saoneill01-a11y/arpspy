@@ -13,6 +13,8 @@ struct Organization: Codable, Identifiable, Hashable {
     /// The read-only SNMP community its scans send (blank = "public"). Kept per organization so one
     /// client's community is never sent to devices on another network.
     var snmpCommunity = ""
+    /// Its scans start as quiet scans (fewer probes, slower; see `ScanPlan`), and its surveys skip the speed test.
+    var quietScan = false
     var notes = ""
     var created = Date()
     /// What its most recent scan found on the network (shown in Settings).
@@ -33,6 +35,7 @@ struct Organization: Codable, Identifiable, Hashable {
         nameServer = try c.decodeIfPresent(String.self, forKey: .nameServer) ?? ""
         dhcpRange = try c.decodeIfPresent(String.self, forKey: .dhcpRange) ?? ""
         snmpCommunity = try c.decodeIfPresent(String.self, forKey: .snmpCommunity) ?? ""
+        quietScan = try c.decodeIfPresent(Bool.self, forKey: .quietScan) ?? false
         seenDHCPServer = try c.decodeIfPresent(String.self, forKey: .seenDHCPServer) ?? ""
         seenNameServers = try c.decodeIfPresent([String].self, forKey: .seenNameServers) ?? []
         seenScan = try c.decodeIfPresent(String.self, forKey: .seenScan) ?? ""

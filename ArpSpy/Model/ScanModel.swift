@@ -24,6 +24,8 @@ final class ScanModel: ObservableObject {
     enum ExportKind { case csv, excel }
 
     @Published var rangeText = ""
+    /// Normal / Quiet switch in the scan bar. Opening a saved scan sets it from its organization's Scan style.
+    @Published var quietScan = false
     @Published var interfaces: [NetInterface] = []
     @Published var selectedInterface = "" { didSet { if selectedInterface != oldValue { applySelectedInterface() } } }
     @Published private(set) var devices: [Device] = [] { didSet { visibleCache = nil } }
@@ -113,6 +115,7 @@ final class ScanModel: ObservableObject {
     /// The History record of the scan in Results (its map is saved there).
     private var currentRecordID: UUID?
     private var bannerJobs = Set<UInt32>()
+    private var webTitleJobs = Set<UInt32>()
     private let commentsKey = "comments"
     private let typesKey = "deviceTypes"
 
@@ -285,6 +288,7 @@ final class ScanModel: ObservableObject {
         searchText = ""
         if let site = currentSite {
             rangeText = site.range
+            if let org = site.organization { quietScan = org.quietScan }
             if site.lastScan != nil { showLastScan() } else {
                 devices = []; indexByID = [:]; selection = []; scannedCount = 0; progress = 0
                 statusText = "\(site.name) · not scanned yet"
@@ -299,6 +303,7 @@ final class ScanModel: ObservableObject {
         selectSite(nil)
         preferredOrgID = org
         autoFileOrgID = org
+        if let o = OrgStore.shared.org(org) { quietScan = o.quietScan }
         devices = []; indexByID = [:]; selection = []; scannedCount = 0; progress = 0
         currentRange = ""
         servers = NetServers(); serverOffer = nil
@@ -898,6 +903,9 @@ final class ScanModel: ObservableObject {
         }
         // Only this scan's own community goes out (an organization's, or a standalone scan's); a new scan sends "public".
         options.snmpCommunity = currentSite?.effectiveSNMPCommunity ?? "public"
+        options.quiet = quietScan
+        // A quiet scan asks SNMP only when this organization (or saved scan) has its own community set.
+        options.snmpInQuiet = currentSite.map { !Site.pick($0.organization?.snmpCommunity, $0.snmpCommunity).isEmpty } ?? false
 
         // Typing a different range while a saved scan is open scans as a new, unsaved scan (offered for saving
         // afterwards) instead of quietly rewriting the saved scan's range and results.
@@ -908,6 +916,7 @@ final class ScanModel: ObservableObject {
             rangeText = typed
             preferredOrgID = org
             options.snmpCommunity = "public"
+            options.snmpInQuiet = false
         }
 
         tab = .results
@@ -1259,6 +1268,7 @@ final class ScanModel: ObservableObject {
 
     /// For the details panel: find out what answers on each open port, once per device.
     func loadBanners(for d: Device) {
+        loadWebTitle(for: d)
         guard d.isOnline, !d.openPorts.isEmpty, d.banners.isEmpty, !bannerJobs.contains(d.id) else { return }
         bannerJobs.insert(d.id)
         let ip = d.ip, ports = d.openPorts
@@ -1266,6 +1276,17 @@ final class ScanModel: ObservableObject {
             let found = await offMain { Banner.grabAll(ip: ip, ports: ports, timeout: 2) }
             bannerJobs.remove(ip.value)
             if !found.isEmpty { addPortScan(ip, open: [], banners: found) }
+        }
+    }
+
+    /// A quiet scan skips web pages, so the details panel reads the device's page title when it opens.
+    func loadWebTitle(for d: Device) {
+        guard d.isOnline, d.webTitle.isEmpty, !d.openPorts.isEmpty, !webTitleJobs.contains(d.id) else { return }
+        webTitleJobs.insert(d.id)
+        let ports = [d.ip.value: d.openPorts]
+        Task {
+            let titles = await offMain { Web.titles(ports, timeout: 3, flag: CancelFlag()) }
+            for (id, t) in titles { if let i = indexByID[id] { devices[i].webTitle = t.cleanedNetworkText() } }
         }
     }
 

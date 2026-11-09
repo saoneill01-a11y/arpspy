@@ -7,7 +7,8 @@ import Darwin
 /// then listen for replies until the timeout.
 enum Pinger {
     /// Returns the addresses that answered, with round-trip time in milliseconds.
-    static func sweep(_ targets: [IPv4], timeout: TimeInterval, flag: CancelFlag) -> [UInt32: Double] {
+    /// `gapMicroseconds` > 0 paces the sweep (a quiet scan): that pause after every ping.
+    static func sweep(_ targets: [IPv4], timeout: TimeInterval, gapMicroseconds: UInt32 = 0, flag: CancelFlag) -> [UInt32: Double] {
         guard !targets.isEmpty else { return [:] }
         let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)
         guard fd >= 0 else { return [:] }
@@ -42,7 +43,8 @@ enum Pinger {
                 Sockets.send(fd, packet, to: target.value)
             }
             // Don't flood: short pause every 32 pings, and pick up early replies.
-            if i % 32 == 31 { usleep(2_000); drain() }
+            if gapMicroseconds > 0 { usleep(gapMicroseconds); drain() }
+            else if i % 32 == 31 { usleep(2_000); drain() }
         }
 
         let deadline = Date().addingTimeInterval(timeout)

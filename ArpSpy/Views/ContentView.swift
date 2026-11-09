@@ -151,6 +151,17 @@ struct ScanBar: View {
                             Button { model.refreshInterfaces() } label: { Image(systemName: "arrow.clockwise") }
                                 .help("Refresh the adapter list (after plugging in a USB or Thunderbolt adapter)")
                                 .accessibilityLabel("Refresh adapter list")
+                            Picker("Scan style", selection: $model.quietScan) {
+                                Text("Normal").tag(false)
+                                Label("Quiet", systemImage: "speaker.slash").tag(true)
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .fixedSize()
+                            .disabled(model.isScanning)
+                            .help(model.quietScan
+                                  ? "Quiet: slow pings, 16 connections at a time, 5 ports per device, no web pages (SNMP only with the organization’s own community). About 30–45 s for a /24."
+                                  : "Normal: everything at full speed, about 10 s for a /24. Quiet sends far less, for networks with an IDS or touchy devices.")
                         }
                     }
                 }

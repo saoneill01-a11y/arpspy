@@ -5,6 +5,38 @@ struct ScanOptions: Sendable {
     /// A site's DNS server to ask for names (nil = only this Mac's DNS).
     var nameServer: IPv4? = nil
     var snmpCommunity = "public"
+    /// Quiet scan: fewer connections at once, paced pings, 5 ports, no web pages; SNMP only when `snmpInQuiet`.
+    var quiet = false
+    /// In a quiet scan, ask SNMP too (the organization or saved scan has its own community set).
+    var snmpInQuiet = false
+
+    var plan: ScanPlan { ScanPlan(quiet: quiet, snmpInQuiet: snmpInQuiet) }
+}
+
+/// What a scan sends, Normal or Quiet. Quiet trades speed and detail for much less noise: it still pings every
+/// address (so an IDS can still see a sweep), but slowly, and it skips the TCP knock, most ports and web pages.
+struct ScanPlan: Equatable, Sendable {
+    let quiet: Bool
+    /// Pause after each ping (µs). 0 = the normal burst (a short pause every 32).
+    let pingGapMicroseconds: UInt32
+    /// TCP knock on addresses that didn't answer ping.
+    let knock: Bool
+    /// Ports checked on each device found.
+    let ports: [UInt16]
+    /// TCP connections open at once.
+    let connectionsAtOnce: Int
+    let webTitles: Bool
+    let snmp: Bool
+
+    init(quiet: Bool, snmpInQuiet: Bool = false) {
+        self.quiet = quiet
+        pingGapMicroseconds = quiet ? 5_000 : 0
+        knock = !quiet
+        ports = quiet ? TCPProbe.discoveryPorts : Ports.scanList
+        connectionsAtOnce = quiet ? 16 : 900
+        webTitles = !quiet
+        snmp = !quiet || snmpInQuiet
+    }
 }
 
 /// Runs one scan, start to finish, off the main thread:
@@ -17,6 +49,7 @@ struct ScanOptions: Sendable {
 enum ScanEngine {
     static func run(targets: [IPv4], interfaces: [NetInterface], options: ScanOptions = ScanOptions(),
                     flag: CancelFlag, report: @escaping @Sendable (ScanEvent) async -> Void) async {
+        let plan = options.plan
         let targetSet = Set(targets.map(\.value))
         var alive = Set<UInt32>()
 
@@ -35,17 +68,18 @@ enum ScanEngine {
         await report(.found(me))
 
         // 1. Ping
-        await report(.progress(0.05, "Pinging \(targets.count) addresses…"))
+        await report(.progress(0.05, plan.quiet ? "Quiet scan: pinging \(targets.count) addresses slowly…" : "Pinging \(targets.count) addresses…"))
         let pingTargets = targets.filter { !alive.contains($0.value) }
-        let replies = await offMain { Pinger.sweep(pingTargets, timeout: 1.2, flag: flag) }
+        let gap = plan.pingGapMicroseconds
+        let replies = await offMain { Pinger.sweep(pingTargets, timeout: 1.2, gapMicroseconds: gap, flag: flag) }
         alive.formUnion(replies.keys)
         await report(.found(replies.keys.sorted().map { Device(ip: IPv4($0)) }))
         await report(.response(replies))
         if flag.isCancelled { await report(.finished(cancelled: true)); return }
 
-        // 2. TCP knock
-        await report(.progress(0.35, "Checking devices that ignore ping…"))
-        let rest = targets.filter { !alive.contains($0.value) }
+        // 2. TCP knock (not in a quiet scan: the ARP table below still finds quiet devices on this subnet)
+        let rest = plan.knock ? targets.filter { !alive.contains($0.value) } : []
+        if plan.knock { await report(.progress(0.35, "Checking devices that ignore ping…")) }
         let knocked = await offMain { TCPProbe.sweep(rest, timeout: 0.7, flag: flag) }
         alive.formUnion(knocked)
         await report(.found(knocked.sorted().map { Device(ip: IPv4($0)) }))
@@ -67,7 +101,8 @@ enum ScanEngine {
         let aliveList = alive.sorted().map(IPv4.init)
         let others = aliveList.filter { selfMACs[$0.value] == nil }
         await report(.progress(0.72, "Checking open ports on \(aliveList.count) devices…"))
-        let ports = await offMain { TCPProbe.openPorts(aliveList, timeout: 0.8, flag: flag) }
+        let portList = plan.ports, atOnce = plan.connectionsAtOnce
+        let ports = await offMain { TCPProbe.openPorts(aliveList, ports: portList, timeout: 0.8, batchSize: atOnce, flag: flag) }
         await report(.ports(ports))
         let byMAC = await v6
         let macs = arp.merging(selfMACs) { _, mine in mine }
@@ -75,10 +110,12 @@ enum ScanEngine {
         if flag.isCancelled { await report(.finished(cancelled: true)); return }
 
         // 5. Identify: these three run alongside the name lookups below.
-        async let web = offMain { Web.titles(ports, timeout: 3, flag: flag) }
+        let webPorts = plan.webTitles ? ports : [:]
+        async let web = offMain { Web.titles(webPorts, timeout: 3, flag: flag) }
         async let upnp = offMain { UPnP.discover(Set(others.map(\.value)), timeout: 3, flag: flag) }
         let community = options.snmpCommunity
-        async let snmp = offMain { SNMP.query(others, community: community, timeout: 2, flag: flag) }
+        let snmpTargets = plan.snmp ? others : []
+        async let snmp = offMain { SNMP.query(snmpTargets, community: community, timeout: 2, flag: flag) }
         let ubntTargets = Set(others.map(\.value))
         async let ubnt = offMain { UbiquitiDiscovery.discover(ubntTargets, interfaces: interfaces, timeout: 2, flag: flag) }
 
