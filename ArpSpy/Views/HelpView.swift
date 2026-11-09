@@ -265,6 +265,7 @@ private struct OpenHelpButton: View {
         Button("ARPradar Help") { openWindow(id: HelpView.windowID) }
             .keyboardShortcut("?", modifiers: .command)
         Divider()
+        Button("Check for Updates…") { openWindow(id: UpdateView.windowID) }
         Button("License") { openWindow(id: LicenseView.windowID) }
     }
 }
