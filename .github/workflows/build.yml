@@ -1,0 +1,42 @@
+# Builds ArpSpy and runs the tests on a GitHub-hosted Mac.
+# Runs only when app code or the project file changes, so docs edits don't use build minutes.
+name: Build
+
+on:
+  push:
+    paths:
+      - "ArpSpy/**"
+      - "ArpSpyTests/**"
+      - "project.yml"
+      - ".github/workflows/build.yml"
+  pull_request:
+    paths:
+      - "ArpSpy/**"
+      - "ArpSpyTests/**"
+      - "project.yml"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:   # adds a "Run workflow" button on the Actions tab
+
+# If you push again while a build is still running, stop the old one.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 20   # hard stop so a stuck build can't eat the free minutes
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen
+
+      - name: Build
+        run: xcodebuild -scheme ArpSpy -destination 'platform=macOS' -derivedDataPath build build
+
+      - name: Test
+        run: xcodebuild -scheme ArpSpy -destination 'platform=macOS' -derivedDataPath build test

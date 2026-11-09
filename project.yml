@@ -1,0 +1,65 @@
+# XcodeGen project description. Run `xcodegen` in this folder to create ArpSpy.xcodeproj.
+name: ArpSpy
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    macOS: "14.0"
+targets:
+  ArpSpy:
+    type: application
+    platform: macOS
+    sources:
+      - path: ArpSpy
+    info:
+      path: ArpSpy/Info.plist
+      properties:
+        CFBundleDisplayName: ARPradar
+        CFBundleName: ARPradar
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHumanReadableCopyright: © 2026 Sean O'Neill. Free software under the GNU GPL v3.
+        # The About box, exported files and crash logs show the version from MARKETING_VERSION below.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSLocalNetworkUsageDescription: ARPradar needs Local Network access to find devices on your network.
+        # macOS shows Wi-Fi network names only to apps allowed to use Location.
+        NSLocationUsageDescription: ARPradar shows Wi-Fi network names in Wi-Fi Signal and Wi-Fi Analyzer. macOS only shares network names with apps allowed to use Location. ARPradar never reads your location.
+        NSLocationWhenInUseUsageDescription: ARPradar shows Wi-Fi network names in Wi-Fi Signal and Wi-Fi Analyzer. macOS only shares network names with apps allowed to use Location. ARPradar never reads your location.
+        # Reading web pages and UPnP files on devices means plain http:// to IP addresses.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.arpspy
+        # The app file is ARPradar.app; the code module stays ArpSpy so tests and saved data are unchanged.
+        PRODUCT_NAME: ARPradar
+        PRODUCT_MODULE_NAME: ArpSpy
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_APP_SANDBOX: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  ArpSpyTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: ArpSpyTests
+    dependencies:
+      - target: ArpSpy
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ARPradar.app/Contents/MacOS/ARPradar"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  ArpSpy:
+    build:
+      targets:
+        ArpSpy: all
+        ArpSpyTests: [test]
+    test:
+      targets:
+        - ArpSpyTests

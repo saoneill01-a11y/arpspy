@@ -1,0 +1,11 @@
+.DS_Store
+build/
+DerivedData/
+*.xcodeproj/
+ArpSpy/Info.plist
+xcuserdata/
+build-release/
+build.noindex/
+build-release.noindex/
+CLAUDE.md
+.claude/
