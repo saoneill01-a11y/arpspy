@@ -73,7 +73,7 @@ struct SavedTable: Codable, Hashable {
 /// One thing saved for an organization: a scan, a DNS lookup, a speed test…
 struct SavedItem: Codable, Identifiable, Hashable {
     enum Kind: String, Codable, CaseIterable {
-        case survey, networkScan, dns, portScan, traceroute, ping, speedTest, wifi, wifiSignal, connection
+        case survey, networkScan, dns, portScan, traceroute, ping, speedTest, wifi, wifiSignal, connection, heatmap
 
         var title: String {
             switch self {
@@ -87,6 +87,7 @@ struct SavedItem: Codable, Identifiable, Hashable {
             case .wifi: return "Wi-Fi survey"
             case .wifiSignal: return "Wi-Fi signal"
             case .connection: return "Connection info"
+            case .heatmap: return "Wi-Fi heatmap"
             }
         }
 
@@ -101,6 +102,7 @@ struct SavedItem: Codable, Identifiable, Hashable {
             case .speedTest: return "speedometer"
             case .wifi, .wifiSignal: return "wifi"
             case .connection: return "cable.connector"
+            case .heatmap: return "map"
             }
         }
 

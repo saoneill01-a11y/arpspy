@@ -119,6 +119,7 @@ struct HelpTopic: Identifiable, Hashable {
                     HelpStep(text: "**DNS Lookup** (⌘3). **All** checks the usual records and about 100 common names (MX, SPF, DMARC, autodiscover, portal, sso, SRV…) in one go. **Follow CNAMEs to other domains** also shows where they lead. Pick any server, or a saved scan’s name server. **Download…** writes CSV or Excel. **Save to Organization** keeps where CNAMEs lead too, so an opened saved lookup has the same **Follow CNAMEs** switch.", advanced: true),
                     HelpStep(text: "**Wi-Fi Signal** (⌘4): signal, noise and channel. Network names need the Location permission: click **Allow…**."),
                     HelpStep(text: "**Wi-Fi Analyzer** (⌘5): nearby networks and how their channels overlap.", advanced: true),
+                    HelpStep(text: "**Wi-Fi Heatmap** (⌥⌘4): load a floor plan, click where you’re standing as you walk, and ARPradar colors the map by signal, access points heard, channel overlap or ping time. Export PNG or save it to an organization."),
                     HelpStep(text: "**Connection Info** (⌘6): DHCP server, DNS, gateway and **Renew DHCP Lease…** (asks for your Mac password). Your public IP is looked up only when you click **Look Up**."),
                     HelpStep(text: "**Speed Test** (⌘7) uses the Mac’s own speed test and keeps a history."),
                     HelpStep(text: "**Subnet Calculator** (⌘8): type an address and mask; **Scan This Range** sends it to the main window.", advanced: true),

@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 enum ToolWindow {
     static let ping = "ping", trace = "traceroute", dns = "dns-lookup"
     static let wifi = "wifi-signal", analyzer = "wifi-analyzer", connection = "connection-info"
-    static let speed = "speed-test", subnet = "subnet-calculator"
+    static let speed = "speed-test", subnet = "subnet-calculator", heatmap = "wifi-heatmap"
 }
 
 // MARK: - Menus
@@ -31,6 +31,7 @@ private struct ToolsMenuItems: View {
         Divider()
         Button("Wi-Fi Signal") { openWindow(id: ToolWindow.wifi) }.keyboardShortcut("4")
         if advanced { Button("Wi-Fi Analyzer") { openWindow(id: ToolWindow.analyzer) }.keyboardShortcut("5") }
+        Button("Wi-Fi Heatmap…") { openWindow(id: ToolWindow.heatmap) }.keyboardShortcut("4", modifiers: [.command, .option])
         Button("Connection Info") { openWindow(id: ToolWindow.connection) }.keyboardShortcut("6")
         Divider()
         Button("Speed Test") { openWindow(id: ToolWindow.speed) }.keyboardShortcut("7")
@@ -78,6 +79,8 @@ struct ToolScenes: Scene {
             .defaultSize(width: 560, height: 460)
         Window("Wi-Fi Analyzer", id: ToolWindow.analyzer) { WiFiAnalyzerView().modifier(AppearanceApplier()).modifier(OrgAutoSaveScope()) }
             .defaultSize(width: 760, height: 620)
+        Window("Wi-Fi Heatmap", id: ToolWindow.heatmap) { HeatmapView().modifier(AppearanceApplier()).modifier(OrgAutoSaveScope()) }
+            .defaultSize(width: 1180, height: 780)
         Window("Connection Info", id: ToolWindow.connection) { ConnectionView().modifier(AppearanceApplier()).modifier(OrgAutoSaveScope()) }
             .defaultSize(width: 520, height: 480)
         Window("Speed Test", id: ToolWindow.speed) { SpeedView().modifier(AppearanceApplier()).modifier(OrgAutoSaveScope()) }
@@ -459,7 +462,7 @@ HStack {
 }
 
 /// Explains (once) why network names are hidden and offers the permission prompt.
-private struct LocationNote: View {
+struct LocationNote: View {
     @ObservedObject var location: LocationPermission
     var body: some View {
         if !location.allowed {
