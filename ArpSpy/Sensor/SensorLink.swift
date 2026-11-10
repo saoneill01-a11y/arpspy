@@ -4,7 +4,7 @@ import Foundation
 
 /// The ARPradar Sensor (a Raspberry Pi running arpradar-sensor; source in the arpradar-windows repo, sensor/) over
 /// Bluetooth LE. Protocol: sensor/src/link.rs. Ownership works like adopting a UniFi device: the first app to connect
-/// claims it (an X25519 key exchange) and keeps the owner secret in the Keychain; the sensor ignores other apps
+/// claims it (an X25519 key exchange) and keeps the owner secret (SensorKeychain: a 0600 file in Application Support); the sensor ignores other apps
 /// until the owner releases it. Every command and every result is AES-GCM encrypted with a key from that secret.
 enum SensorProtocol {
     static let service = CBUUID(string: "41525052-4144-4152-0000-000000000001")
@@ -62,26 +62,27 @@ enum SensorProtocol {
     }
 }
 
-/// Owner secrets, one per sensor id, in the login Keychain.
+/// Owner keys, one per sensor id, in ~/Library/Application Support/ArpSpy/sensor-owners.json (readable only by this
+/// user). Not the Keychain: an app that isn't signed by Apple yet gets a Keychain password prompt after every update.
 enum SensorKeychain {
-    static let service = "ARPradar Sensor"
-    static func get(_ id: String) -> Data? {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                kSecAttrAccount as String: id, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
-        var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
-        return d
+    private static var url: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("ArpSpy")
+        return dir.appendingPathComponent("sensor-owners.json")
     }
-    static func set(_ id: String, _ secret: Data) {
-        delete(id)
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                kSecAttrAccount as String: id, kSecValueData as String: secret, kSecAttrLabel as String: "ARPradar Sensor owner key"]
-        SecItemAdd(q as CFDictionary, nil)
+    private static func load() -> [String: String] {
+        guard let d = try? Data(contentsOf: url), let m = try? JSONDecoder().decode([String: String].self, from: d) else { return [:] }
+        return m
     }
-    static func delete(_ id: String) {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: id]
-        SecItemDelete(q as CFDictionary)
+    private static func save(_ m: [String: String]) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard let d = try? JSONEncoder().encode(m) else { return }
+        try? d.write(to: url, options: .atomic)
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
+    static func get(_ id: String) -> Data? { load()[id].flatMap(SensorProtocol.unhex) }
+    static func set(_ id: String, _ secret: Data) { var m = load(); m[id] = SensorProtocol.hex(secret); save(m) }
+    static func delete(_ id: String) { var m = load(); m[id] = nil; save(m) }
 }
 
 /// One device in the sensor's results.
@@ -137,8 +138,15 @@ final class SensorLink: NSObject, ObservableObject {
     /// The command waiting for a fresh nonce from INFO.
     private var pending: [String: Any]?
     private var queue: [[String: Any]] = []
-    /// A claim was written; the waiting command goes out after the sensor answers "claimed".
+    /// A claim was written; the waiting command goes out once the sensor acknowledges it.
     private var claimInFlight = false
+    /// An INFO read is on its way (only ever one, so each command gets its own fresh nonce).
+    private var infoInFlight = false
+    /// The waiting command was refused once (an old nonce); it gets one more try with a fresh one.
+    private var retried = false
+    /// Gives up on a connection that never gets ready (a sensor rebooting, out of range).
+    private var connectWatch: Task<Void, Never>?
+    private var serviceTries = 0
 
     /// Starts Bluetooth (first use asks for permission) and looks for sensors.
     func start() {
@@ -163,12 +171,21 @@ final class SensorLink: NSObject, ObservableObject {
         peripheral = p
         p.delegate = self
         phase = .connecting
+        serviceTries = 0
         central?.connect(p)
+        connectWatch?.cancel()
+        connectWatch = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard !Task.isCancelled, let self, self.selected == id, self.phase == .connecting else { return }
+            self.disconnect()
+            self.phase = .failed("Couldn’t reach the sensor. Make sure it’s on and nearby, then click it again.")
+        }
     }
 
     private func disconnect() {
+        connectWatch?.cancel()
         if let p = peripheral { central?.cancelPeripheralConnection(p) }
-        peripheral = nil; chars = [:]; key = nil; pending = nil; queue = []; claimInFlight = false
+        peripheral = nil; chars = [:]; key = nil; pending = nil; queue = []; claimInFlight = false; infoInFlight = false; retried = false
         sensorName = ""; version = ""; ssid = ""; ip = ""; networks = []; note = ""; sensorID = ""
         if selected != nil { phase = .idle }
         selected = nil
@@ -201,13 +218,23 @@ final class SensorLink: NSObject, ObservableObject {
     }
 
     private func next() {
-        guard pending == nil, !queue.isEmpty, let p = peripheral, let info = chars[SensorProtocol.info] else { return }
+        guard pending == nil, !queue.isEmpty else { return }
         pending = queue.removeFirst()
-        p.readValue(for: info)   // a fresh nonce for this command
+        retried = false
+        readInfo()
+    }
+
+    /// Asks for INFO (a fresh nonce) for the waiting command; never two at once.
+    private func readInfo() {
+        guard !infoInFlight, pending != nil, let p = peripheral, let info = chars[SensorProtocol.info] else { return }
+        infoInFlight = true
+        p.readValue(for: info)
     }
 
     /// INFO arrived: claim a free sensor, or send the waiting command.
     private func gotInfo(_ data: Data) {
+        infoInFlight = false
+        guard pending != nil else { return }
         guard let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let nonce = (info["nonce"] as? String).flatMap(SensorProtocol.unhex), nonce.count == 16,
               let id = info["id"] as? String, let p = peripheral, let cmdChar = chars[SensorProtocol.command] else {
@@ -226,7 +253,7 @@ final class SensorLink: NSObject, ObservableObject {
             var bytes = Data([0xC1]); bytes.append(mine.publicKey.rawRepresentation)
             claimInFlight = true
             p.writeValue(bytes, for: cmdChar, type: .withResponse)
-            return   // the claim answers; `pending` is sent after "claimed"
+            return   // the claim's acknowledgement sends `pending` (didWriteValue)
         }
         guard let secret = SensorKeychain.get(id) else {
             pending = nil; queue = []
@@ -243,11 +270,10 @@ final class SensorLink: NSObject, ObservableObject {
     private func gotEvent(_ ev: [String: Any]) {
         switch ev["type"] as? String {
         case "claimed":
-            claimInFlight = false
-            // The waiting command goes out with a fresh nonce.
-            if let p = peripheral, let info = chars[SensorProtocol.info], pending != nil { p.readValue(for: info) }
+            break   // handled by the claim's acknowledgement
         case "status":
             ssid = ev["ssid"] as? String ?? ""; ip = ev["ip"] as? String ?? ""
+            connectWatch?.cancel()
             if !isWorking { phase = .ready }
         case "networks":
             networks = (ev["networks"] as? [[String: Any]] ?? []).compactMap {
@@ -329,8 +355,26 @@ extension SensorLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     nonisolated func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let s = p.services?.first(where: { $0.uuid == SensorProtocol.service }) else { return }
-        p.discoverCharacteristics([SensorProtocol.info, SensorProtocol.command, SensorProtocol.events], for: s)
+        if let s = p.services?.first(where: { $0.uuid == SensorProtocol.service }) {
+            p.discoverCharacteristics([SensorProtocol.info, SensorProtocol.command, SensorProtocol.events], for: s)
+            return
+        }
+        // Not there (yet): the sensor may be starting up. Look again a few times.
+        MainActor.assumeIsolated {
+            serviceTries += 1
+            guard serviceTries < 6 else { phase = .failed("That device isn’t answering as an ARPradar Sensor."); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { p.discoverServices([SensorProtocol.service]) }
+        }
+    }
+
+    /// The sensor restarted its service (an update, a reboot): find it again.
+    nonisolated func peripheral(_ p: CBPeripheral, didModifyServices invalidated: [CBService]) {
+        MainActor.assumeIsolated {
+            chars = [:]; pending = nil; infoInFlight = false; claimInFlight = false
+            if !isWorking { phase = .connecting }
+            serviceTries = 0
+        }
+        p.discoverServices([SensorProtocol.service])
     }
 
     nonisolated func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
@@ -367,13 +411,21 @@ extension SensorLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     nonisolated func peripheral(_ p: CBPeripheral, didWriteValueFor c: CBCharacteristic, error: Error?) {
         let failed = error != nil
         MainActor.assumeIsolated {
-            if failed {
-                let wasClaim = claimInFlight
-                pending = nil; queue = []; claimInFlight = false
-                phase = wasClaim ? .failed("Couldn’t set up the sensor. Try again.") : .ownedByOther
+            if claimInFlight {
+                claimInFlight = false
+                if failed { pending = nil; queue = []; phase = .failed("Couldn’t set this Mac up as the sensor’s owner. Click it again to retry."); return }
+                readInfo()   // the claimed sensor: now send the waiting command with a fresh nonce
                 return
             }
-            if claimInFlight { return }   // wait for "claimed"
+            if failed {
+                // Most often an old nonce (two apps nearby, or a reconnect): one more try with a fresh one.
+                if !retried { retried = true; readInfo(); return }
+                // Still refused: this Mac's key no longer fits (released or reset elsewhere).
+                if !sensorID.isEmpty { SensorKeychain.delete(sensorID) }
+                pending = nil; queue = []
+                phase = .ownedByOther
+                return
+            }
             pending = nil
             next()
         }
