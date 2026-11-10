@@ -939,6 +939,38 @@ final class ScanModel: ObservableObject {
         }
     }
 
+    /// Results from the ARPradar Sensor (Bluetooth): shown as a new, unsaved scan, through the same steps as a scan
+    /// from this Mac (vendors, types, NEW badges, History, the offer to save), so they behave the same way.
+    func showSensorScan(rows: [SensorRow], range: String, seconds: Double, label: String, cancelled: Bool) {
+        guard !isScanning else { return }
+        newScan()
+        rangeText = range
+        let targets = (try? IPRangeParser.parse(range)) ?? rows.map(\.ip)
+        tab = .results
+        isScanning = true; progress = 0; scannedCount = targets.count
+        startedAt = Date().addingTimeInterval(-seconds)
+        currentTargets = Set(targets.map(\.value)).union(rows.map(\.ip.value))
+        currentRange = range
+        scanSiteID = nil
+        let flag = CancelFlag(); self.flag = flag
+        handle(.found(rows.map { Device(ip: $0.ip) }), flag: flag)
+        handle(.macs(Dictionary(rows.filter { !$0.mac.isEmpty }.map { ($0.ip.value, $0.mac) }, uniquingKeysWith: { a, _ in a })), flag: flag)
+        handle(.ports(Dictionary(rows.map { ($0.ip.value, $0.ports) }, uniquingKeysWith: { a, _ in a })), flag: flag)
+        handle(.response(Dictionary(rows.compactMap { r in r.ms.map { (r.ip.value, $0) } }, uniquingKeysWith: { a, _ in a })), flag: flag)
+        handle(.webTitles(Dictionary(rows.filter { !$0.web.isEmpty }.map { ($0.ip.value, $0.web) }, uniquingKeysWith: { a, _ in a })), flag: flag)
+        for r in rows {
+            guard let i = indexByID[r.ip.value] else { continue }
+            if !r.upnp.isEmpty { devices[i].upnp = r.upnp.cleanedNetworkText() }
+            if !r.snmp.isEmpty { devices[i].snmpDescr = r.snmp.cleanedNetworkText() }
+            if !r.snmpName.isEmpty { devices[i].snmpName = r.snmpName.cleanedNetworkText() }
+            if !r.ubnt.isEmpty { devices[i].ubntModel = r.ubnt.cleanedNetworkText() }
+        }
+        handle(.names(source: "Sensor", Dictionary(rows.filter { !$0.name.isEmpty }.map { ($0.ip.value, $0.name) }, uniquingKeysWith: { a, _ in a })), flag: flag)
+        handle(.finished(cancelled: cancelled), flag: flag)
+        statusText = "\(label) · \(rows.count) devices in \(String(format: "%.1f", seconds)) s"
+        showPermissionHint = false
+    }
+
     private func handle(_ event: ScanEvent, flag: CancelFlag) {
         guard flag === self.flag else { return }   // ignore leftovers from an older scan
         switch event {

@@ -35,6 +35,10 @@ private struct ToolsMenuItems: View {
         Divider()
         Button("Speed Test") { openWindow(id: ToolWindow.speed) }.keyboardShortcut("7")
         if advanced { Button("Subnet Calculator") { openWindow(id: ToolWindow.subnet) }.keyboardShortcut("8") }
+        if advanced {
+            Divider()
+            Button("ARPradar Sensor…") { openWindow(id: SensorView.windowID) }.keyboardShortcut("9")
+        }
     }
 }
 

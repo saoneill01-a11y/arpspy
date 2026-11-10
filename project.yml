@@ -20,6 +20,7 @@ targets:
         # The About box, exported files and crash logs show the version from MARKETING_VERSION below.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSBluetoothAlwaysUsageDescription: ARPradar uses Bluetooth only to talk to an ARPradar Sensor you pick in Tools › ARPradar Sensor.
         NSLocalNetworkUsageDescription: ARPradar needs Local Network access to find devices on your network.
         # macOS shows Wi-Fi network names only to apps allowed to use Location.
         NSLocationUsageDescription: ARPradar shows Wi-Fi network names in Wi-Fi Signal and Wi-Fi Analyzer. macOS only shares network names with apps allowed to use Location. ARPradar never reads your location.

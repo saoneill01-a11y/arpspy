@@ -50,6 +50,12 @@ struct ArpSpyApp: App {
         }
         .defaultSize(width: 820, height: 580)
 
+        Window("ARPradar Sensor", id: SensorView.windowID) {
+            SensorView()
+                .modifier(AppearanceApplier())
+        }
+        .defaultSize(width: 680, height: 440)
+
         Window("Check for Updates", id: UpdateView.windowID) {
             UpdateView()
                 .modifier(AppearanceApplier())
