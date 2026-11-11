@@ -95,7 +95,8 @@ struct HeatmapView: View {
 
     private var survey: HeatSurvey? { store.survey(UUID(uuidString: currentID)) ?? store.surveys.first }
     private var filter: HeatFilter {
-        HeatFilter(ssid: survey?.shownNetwork, band: band, bssid: mode == .oneAP ? apBSSID : nil)
+        HeatFilter(ssid: survey?.shownNetwork, band: band, bssid: mode == .oneAP ? apBSSID : nil,
+                   radios: mode == .oneAP ? Set(survey.map { s in s.apGroups.filter { $0.value == apBSSID }.map(\.key) } ?? []) : [])
     }
 
     var body: some View {
@@ -477,6 +478,24 @@ struct HeatmapView: View {
         .zIndex(showName ? 1 : 0)
     }
 
+    /// Every radio of `ap` (and of `target`) goes with `target`. Its name and placed position carry over when the
+    /// target has none.
+    private func combine(_ ap: HeatAP, into target: HeatAP, _ s: HeatSurvey) {
+        store.update(s.id) { sv in
+            for r in ap.radioList + target.radioList { sv.apOverrides[r] = target.key }
+            if (sv.apNames[target.key] ?? "").isEmpty, let n = sv.apNames[ap.key], !n.isEmpty { sv.apNames[target.key] = n }
+            if sv.apPlaces[target.key] == nil, let p = sv.apPlaces[ap.key] { sv.apPlaces[target.key] = p }
+            sv.apNames[ap.key] = nil; sv.apPlaces[ap.key] = nil
+        }
+        if apBSSID == ap.key { apBSSID = target.key }
+    }
+
+    /// Each of `ap`'s radios becomes its own access point.
+    private func separate(_ ap: HeatAP, _ s: HeatSurvey) {
+        store.update(s.id) { sv in for r in ap.radioList { sv.apOverrides[r] = r } }
+        if apBSSID == ap.key { apBSSID = nil }
+    }
+
     private func apDragGesture(_ ap: HeatAP, _ s: HeatSurvey, _ f: (origin: CGPoint, k: Double)) -> some Gesture {
         DragGesture(minimumDistance: 3, coordinateSpace: .named("plan"))
             .onChanged { v in draggingAP = (ap.key, v.location) }
@@ -491,6 +510,23 @@ struct HeatmapView: View {
     @ViewBuilder private func apMenu(_ ap: HeatAP, _ s: HeatSurvey) -> some View {
         Button("Show Only This Access Point") { mode = .oneAP; apBSSID = ap.key }
         Button("Name This Access Point…") { nameText = s.apNames[ap.key] ?? ""; naming = .ap(ap.key) }
+        Divider()
+        // One physical AP showing up as two: combine them. Two APs lumped together: separate the radios.
+        let others = (heat?.aps ?? []).filter { $0.key != ap.key }
+        if !others.isEmpty {
+            Menu("Combine With") {
+                ForEach(others) { o in
+                    Button("\(s.apName(o.bssid, ssid: o.ssid)) · \(o.bands.joined(separator: " + "))") { combine(ap, into: o, s) }
+                }
+            }
+        }
+        if ap.radios > 1 {
+            Button("Separate Radios (\(ap.radios))") { separate(ap, s) }
+        }
+        if ap.radioList.contains(where: { s.apOverrides[$0] != nil }) {
+            Button("Undo Combine or Separate") { store.update(s.id) { sv in for r in ap.radioList { sv.apOverrides[r] = nil } } }
+        }
+        Divider()
         if ap.placed {
             Button("Use Estimated Position") { store.update(s.id) { $0.apPlaces[ap.key] = nil } }
         }
@@ -843,7 +879,8 @@ struct HeatmapView: View {
             // Findings are about the whole network; the Coverage box follows the map (one AP alone when that's shown).
             let best = mode == .signal ? g : Heatmap.grid(s, mode: .signal, filter: filter)
             let shown = Heatmap.coverage(mode.isSignal ? g : best)
-            return (g, shown, Heatmap.accessPoints(s.spots, filter: HeatFilter(ssid: filter.ssid, band: filter.band), placed: s.apPlaces),
+            return (g, shown, Heatmap.accessPoints(s.spots, filter: HeatFilter(ssid: filter.ssid, band: filter.band), placed: s.apPlaces,
+                                                   overrides: s.apOverrides),
                     Heatmap.findings(s, filter: filter, coverage: Heatmap.coverage(best)))
         }
         heat = HeatResult(image: HeatImage.make(parts.0, mode: mode), coverage: parts.1, aps: parts.2, findings: parts.3)
@@ -853,7 +890,7 @@ struct HeatmapView: View {
     /// Access points the UniFi map knows (from the last scan with a controller) get their UniFi names, kept with the
     /// heatmap so they stay when there's no controller. Names you gave aren't touched.
     private func nameFromUniFi(_ s: HeatSurvey, aps: [HeatAP]) {
-        let uni = Heatmap.uniFiNames(ScanModel.shared.netMap)
+        let uni = Heatmap.uniFiNames(ScanModel.shared.netMap, groups: s.apGroups)
         let new = aps.compactMap { ap -> (String, String)? in
             guard let n = uni[ap.key], s.apNames[ap.key] == nil, s.apNames[ap.bssid] == nil else { return nil }
             return (ap.key, n)

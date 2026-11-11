@@ -274,3 +274,51 @@ final class MapPlanTests: XCTestCase {
         print("Live map snapshot: \(Int(image.size.width))×\(Int(image.size.height)) points, \(String(format: "%.1f", metresWide)) m wide")
     }
 }
+
+/// Grouping an access point's radios, with made-up addresses in the patterns real APs use.
+final class APGroupingTests: XCTestCase {
+    func testNumberingStyles() {
+        XCTAssertTrue(Heatmap.sameAP("02:00:5E:CC:2C:71", "02:00:5E:CC:2C:73"))     // last byte counts up (2.4/5/6 GHz)
+        XCTAssertTrue(Heatmap.sameAP("02:00:5E:2D:B6:12", "02:00:5E:2E:B6:12"))     // a middle byte steps (older Ubiquiti)
+        XCTAssertTrue(Heatmap.sameAP("02:00:5E:AA:2E:E4", "02:00:5E:AB:2E:E4"))
+        XCTAssertTrue(Heatmap.sameAP("7A:00:5E:12:34:56", "76:00:5E:12:34:56"))     // first byte's admin bits
+        XCTAssertTrue(Heatmap.sameAP("7A:00:5E:12:34:56", "76:00:5E:12:34:57"))     // first and last together
+        XCTAssertFalse(Heatmap.sameAP("02:00:5E:2D:B6:12", "02:00:5E:2D:B7:40"))    // two bytes differ: another AP
+        XCTAssertFalse(Heatmap.sameAP("02:00:5E:2D:B6:12", "02:00:5E:3D:B6:12"))    // too far apart
+        XCTAssertFalse(Heatmap.sameAP("02:00:5E:12:34:10", "02:00:5E:12:34:60"))
+        XCTAssertFalse(Heatmap.sameAP("02:00:5E:12:34:56", "02:00:5F:12:34:56"))    // a different maker
+    }
+
+    func testFiveAPsFromThirteenRadios() {
+        let radios = ["02:00:5E:49:E9:65", "02:00:5E:49:E9:66", "02:00:5E:CC:2C:71", "02:00:5E:CC:2C:72", "02:00:5E:CC:2C:73",
+                      "02:00:5E:6B:18:64", "02:00:5E:6C:18:64", "02:00:5E:2D:B6:12", "02:00:5E:2E:B6:12",
+                      "02:00:5E:AA:2E:E4", "02:00:5E:AB:2E:E4", "02:00:5E:71:69:11", "02:00:5E:72:69:11"]
+        let g = Heatmap.groups(radios)
+        XCTAssertEqual(Set(g.values).count, 6)
+        XCTAssertEqual(g["02:00:5E:2D:B6:12"], g["02:00:5E:2E:B6:12"])
+        XCTAssertEqual(g["02:00:5E:CC:2C:71"], g["02:00:5E:CC:2C:73"])
+        XCTAssertNotEqual(g["02:00:5E:CC:2C:71"], g["02:00:5E:2D:B6:12"])
+        XCTAssertEqual(g["02:00:5E:2D:B6:12"], Heatmap.apKey("02:00:5E:2D:B6:12"))   // the lowest radio's old key, so saved names still fit
+    }
+
+    func testCombineAndSeparateByHand() {
+        let a = "02:00:5E:11:11:11", b = "02:00:5E:99:99:99"
+        XCTAssertNotEqual(Heatmap.groups([a, b])[a], Heatmap.groups([a, b])[b])
+        let combined = Heatmap.groups([a, b], overrides: [a: "K", b: "K"])
+        XCTAssertEqual(combined[a], "K"); XCTAssertEqual(combined[b], "K")
+        let c = "02:00:5E:CC:2C:71", d = "02:00:5E:CC:2C:72"
+        let separated = Heatmap.groups([c, d], overrides: [c: c, d: d])
+        XCTAssertNotEqual(separated[c], separated[d])
+        // In the map: one AP, two radios, with "show only this AP" using both.
+        func spot(_ x: Double, _ ra: Int, _ rb: Int) -> HeatSpot {
+            HeatSpot(x: x, y: 0, readings: [HeatReading(ssid: "N", bssid: a, rssi: ra, channel: 6, band: "2.4 GHz", widthMHz: 20),
+                                            HeatReading(ssid: "N", bssid: b, rssi: rb, channel: 36, band: "5 GHz", widthMHz: 80)])
+        }
+        let spots = [spot(0, -50, -40), spot(100, -60, -70), spot(200, -70, -75)]
+        let aps = Heatmap.accessPoints(spots, filter: HeatFilter(ssid: "N"), overrides: [a: "K", b: "K"])
+        XCTAssertEqual(aps.count, 1)
+        XCTAssertEqual(aps[0].radioList, [a, b])
+        XCTAssertEqual(aps[0].bands, ["2.4 GHz", "5 GHz"])
+        XCTAssertEqual(Heatmap.value(spots[0], mode: .oneAP, filter: HeatFilter(ssid: "N", bssid: "K", radios: [a, b])), -40)
+    }
+}
