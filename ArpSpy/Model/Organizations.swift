@@ -106,19 +106,21 @@ struct SavedItem: Codable, Identifiable, Hashable {
             }
         }
 
-        /// The filter tab it's under in the Organizations window.
+        /// The tab it's under on an organization's page. A survey's own results also show under their survey.
         var group: Filter {
             switch self {
-            case .survey, .networkScan: return .scans
+            case .survey: return .surveys
+            case .networkScan: return .scans
             case .dns: return .dns
             case .portScan: return .ports
+            case .heatmap: return .heatmaps
             default: return .other
             }
         }
     }
 
     enum Filter: String, CaseIterable, Identifiable {
-        case everything = "Everything", scans = "Scans", dns = "DNS", ports = "Ports", other = "Other"
+        case surveys = "Site Surveys", scans = "Network Scans", dns = "DNS", ports = "Ports", heatmaps = "Wi-Fi Heatmaps", other = "Other"
         var id: String { rawValue }
     }
 
@@ -231,6 +233,23 @@ final class OrgStore: ObservableObject {
         }
         return out
     }
+    /// The Site Surveys tab: each survey (newest first), followed by its results (oldest first) when it's open.
+    nonisolated static func surveyRows(_ list: [SavedItem], expanded: Set<UUID>) -> [(item: SavedItem, indented: Bool)] {
+        var out: [(SavedItem, Bool)] = []
+        for s in list.filter({ $0.kind == .survey }).sorted(by: { $0.date > $1.date }) {
+            out.append((s, false))
+            guard expanded.contains(s.id), let sid = s.surveyID else { continue }
+            for c in list.filter({ $0.surveyID == sid && $0.kind != .survey }).sorted(by: { $0.date < $1.date }) { out.append((c, true)) }
+        }
+        return out
+    }
+
+    /// How many results a survey filed.
+    nonisolated static func surveyResultCount(_ survey: SavedItem, in list: [SavedItem]) -> Int {
+        guard let sid = survey.surveyID else { return 0 }
+        return list.filter { $0.surveyID == sid && $0.kind != .survey }.count
+    }
+
     func item(_ id: UUID?) -> SavedItem? { items.first { $0.id == id } }
 
     func uniqueName(_ base: String) -> String {

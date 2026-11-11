@@ -322,7 +322,9 @@ private struct OrgDetail: View {
     let orgID: UUID
     @ObservedObject private var orgs = OrgStore.shared
     @ObservedObject private var model = ScanModel.shared
-    @State private var filter = SavedItem.Filter.everything
+    @State private var filter = SavedItem.Filter.surveys
+    /// Surveys opened on the Site Surveys tab (they start closed).
+    @State private var expanded = Set<UUID>()
     @State private var askPortTarget = false
     @State private var portTarget = ""
     @State private var selection = Set<UUID>()
@@ -334,7 +336,7 @@ private struct OrgDetail: View {
     private var org: Organization? { orgs.org(orgID) }
     private var shown: [(item: SavedItem, indented: Bool)] {
         let list = orgs.items(for: orgID)
-        if filter == .everything { return OrgStore.timeline(list) }
+        if filter == .surveys { return OrgStore.surveyRows(list, expanded: expanded) }
         return list.filter { $0.kind.group == filter }.map { ($0, false) }
     }
 
@@ -375,8 +377,17 @@ private struct OrgDetail: View {
                 Picker("", selection: $filter) {
                     ForEach(SavedItem.Filter.allCases) { f in Text(f.rawValue).tag(f) }
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 380)
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
                 Spacer()
+                if filter == .surveys {
+                    Button { openWindow(id: OrgWindows.setup, value: orgID) } label: { Label("New Site Survey", systemImage: "plus") }
+                        .disabled(SurveyRunner.shared.running || model.isScanning)
+                        .help("Runs a survey for this organization. Click a survey to show or hide what it found.")
+                }
+                if filter == .heatmaps {
+                    Button { openTool(ToolWindow.heatmap) } label: { Label("New Wi-Fi Heatmap", systemImage: "plus") }
+                        .help("Opens Wi-Fi Heatmap. Save the result to this organization from there.")
+                }
                 if filter == .scans {
                     Button { model.newScan(for: orgID); openWindow(id: "main") } label: {
                         Label("New Network Scan", systemImage: "plus")
@@ -428,7 +439,13 @@ private struct OrgDetail: View {
             List(selection: $selection) {
                 ForEach(shown, id: \.item.id) { row in
                     let i = row.item
+                    let isSurveyHeader = filter == .surveys && i.kind == .survey
                     HStack(alignment: .top, spacing: 10) {
+                        if isSurveyHeader {
+                            Image(systemName: expanded.contains(i.id) ? "chevron.down" : "chevron.right")
+                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 12).padding(.top, 3)
+                                .accessibilityLabel(expanded.contains(i.id) ? "Hide results" : "Show results")
+                        }
                         Image(systemName: i.kind.symbol).foregroundStyle(.secondary).frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(i.title).fontWeight(.semibold)
@@ -437,12 +454,22 @@ private struct OrgDetail: View {
                             if !i.note.isEmpty { Text("“\(i.note)”").font(.callout).italic() }
                         }
                         Spacer()
+                        if isSurveyHeader {
+                            let n = OrgStore.surveyResultCount(i, in: orgs.items(for: orgID))
+                            Text("\(n) result\(n == 1 ? "" : "s")").font(.caption).foregroundStyle(.secondary)
+                        }
                         if i.surveyID != nil && i.kind != .survey && !row.indented {
                             Text("survey").font(.caption2).padding(.horizontal, 6).padding(.vertical, 1)
                                 .background(Capsule().fill(Color.accentColor.opacity(0.15)))
                         }
                     }
-                    .padding(.leading, row.indented ? 28 : 0)
+                    .padding(.leading, row.indented ? 50 : 0)
+                    .contentShape(Rectangle())
+                    // Clicking a survey opens or closes its list of results (it's still selected, too).
+                    .simultaneousGesture(TapGesture().onEnded {
+                        guard isSurveyHeader else { return }
+                        if expanded.contains(i.id) { expanded.remove(i.id) } else { expanded.insert(i.id) }
+                    })
                     .tag(i.id)
                     .padding(.vertical, 2)
                 }
@@ -460,8 +487,8 @@ private struct OrgDetail: View {
             .onDeleteCommand { if !selection.isEmpty { confirmDelete = true } }
             .overlay {
                 if shown.isEmpty {
-                    Text(filter == .everything ? "Nothing saved yet. Scan one of its saved scans, run a survey, or use Save to Organization in any tool."
-                                               : "Nothing saved under \(filter.rawValue).")
+                    Text(filter == .surveys ? "No site surveys yet. Click New Site Survey to run one."
+                                            : "Nothing saved under \(filter.rawValue).")
                         .foregroundStyle(.secondary).multilineTextAlignment(.center).padding()
                 }
             }
@@ -479,7 +506,7 @@ private struct OrgDetail: View {
             }
         }
         .padding(16)
-        .onChange(of: orgID) { selection = []; filter = .everything }
+        .onChange(of: orgID) { selection = []; filter = .surveys; expanded = [] }
         .confirmationDialog(selection.count == 1 ? "Delete this saved item?" : "Delete \(selection.count) saved items?",
                             isPresented: $confirmDelete) {
             Button("Delete", role: .destructive) { orgs.deleteItems(selection); selection = [] }

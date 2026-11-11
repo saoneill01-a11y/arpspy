@@ -87,3 +87,26 @@ final class StaleUplinkTests: XCTestCase {
         XCTAssertEqual(sw.uplinkRemotePort, 42)
     }
 }
+
+/// The organization page's tabs.
+final class OrgTabsTests: XCTestCase {
+    func testSurveysCollapseAndTabsSplit() {
+        let org = UUID(), sid = UUID()
+        let t = SavedTable(header: [], rows: [])
+        let survey = SavedItem(orgID: org, kind: .survey, title: "Site survey", summary: "", table: t, surveyID: sid)
+        let scan = SavedItem(orgID: org, kind: .networkScan, title: "Network scan", summary: "", table: t, surveyID: sid)
+        let loose = SavedItem(orgID: org, kind: .networkScan, title: "Network scan · 10.20.30.0/24", summary: "", table: t)
+        let heat = SavedItem(orgID: org, kind: .heatmap, title: "Wi-Fi heatmap · Office", summary: "", table: t)
+        let all = [survey, scan, loose, heat]
+        // Closed: just the survey. Open: the survey and what it found, not the other items.
+        XCTAssertEqual(OrgStore.surveyRows(all, expanded: []).map(\.item.id), [survey.id])
+        let open = OrgStore.surveyRows(all, expanded: [survey.id])
+        XCTAssertEqual(open.map(\.item.id), [survey.id, scan.id])
+        XCTAssertEqual(open.map(\.indented), [false, true])
+        XCTAssertEqual(OrgStore.surveyResultCount(survey, in: all), 1)
+        // Network Scans has no survey rows; heatmaps have their own tab.
+        XCTAssertEqual(all.filter { $0.kind.group == .scans }.map(\.id), [scan.id, loose.id])
+        XCTAssertEqual(all.filter { $0.kind.group == .heatmaps }.map(\.id), [heat.id])
+        XCTAssertEqual(SavedItem.Filter.allCases.map(\.rawValue), ["Site Surveys", "Network Scans", "DNS", "Ports", "Wi-Fi Heatmaps", "Other"])
+    }
+}
