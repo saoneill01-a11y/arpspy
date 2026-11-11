@@ -416,7 +416,8 @@ enum Heatmap {
         if let s = filter.ssid { summary += " · \(s)" }
         return SavedDraft(kind: .heatmap, title: "Wi-Fi heatmap · \(survey.name)", summary: summary,
                           table: SavedTable(header: ["Spot", "Where", "Best AP", "Signal dBm", "Channel", "APs at −75+", "Networks heard", "Ping ms", "When"],
-                                            rows: rows, widths: [6, 14, 26, 11, 14, 12, 15, 9, 20], numberColumns: [0, 3, 5, 6, 7]))
+                                            rows: rows, widths: [6, 14, 26, 11, 14, 12, 15, 9, 20], numberColumns: [0, 3, 5, 6, 7]),
+                          heatmapID: survey.id)
     }
 }
 
@@ -469,6 +470,21 @@ final class HeatmapStore: ObservableObject {
         guard let i = surveys.firstIndex(where: { $0.id == id }) else { return }
         change(&surveys[i])
         write(surveys[i])
+    }
+
+    /// Save as New Heatmap: a copy (floor plan, scale, spots, AP names) under a new name, standalone until it's saved
+    /// to an organization. The original stays as it is.
+    @discardableResult
+    func duplicate(_ id: UUID, name: String) -> UUID? {
+        guard let s = survey(id) else { return nil }
+        var copy = s
+        copy.id = UUID(); copy.name = uniqueName(name); copy.created = Date(); copy.orgID = nil
+        let fm = FileManager.default
+        try? fm.createDirectory(at: dir(copy.id), withIntermediateDirectories: true)
+        if let file = s.planFile { try? fm.copyItem(at: dir(id).appendingPathComponent(file), to: dir(copy.id).appendingPathComponent(file)) }
+        surveys.insert(copy, at: 0)
+        write(copy)
+        return copy.id
     }
 
     /// Moves the heatmap's folder to the Trash.

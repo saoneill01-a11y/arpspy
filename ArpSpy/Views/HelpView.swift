@@ -120,6 +120,7 @@ struct HelpTopic: Identifiable, Hashable {
                     HelpStep(text: "**Wi-Fi Signal** (⌘4): signal, noise and channel. Network names need the Location permission: click **Allow…**."),
                     HelpStep(text: "**Wi-Fi Analyzer** (⌘5): nearby networks and how their channels overlap.", advanced: true),
                     HelpStep(text: "**Wi-Fi Heatmap** (⌥⌘4): load a floor plan, click where you’re standing as you walk, and ARPradar colors the map by signal, access points heard, channel overlap or ping time. Export PNG or save it to an organization."),
+                    HelpStep(text: "A heatmap saves itself as you measure. The heatmap menu (top left) lists them by organization, then **Standalone**. Open one from an organization’s **Wi-Fi Heatmaps** tab to see its floor plan and measure more; **Update in <organization>** saves the new spots over its entry there. **Save as New Heatmap…** starts a separate copy (same floor plan and spots) that stays standalone until you save it to an organization."),
                     HelpStep(text: "**Connection Info** (⌘6): DHCP server, DNS, gateway and **Renew DHCP Lease…** (asks for your Mac password). Your public IP is looked up only when you click **Look Up**."),
                     HelpStep(text: "**Speed Test** (⌘7) uses the Mac’s own speed test and keeps a history."),
                     HelpStep(text: "**Subnet Calculator** (⌘8): type an address and mask; **Scan This Range** sends it to the main window.", advanced: true),

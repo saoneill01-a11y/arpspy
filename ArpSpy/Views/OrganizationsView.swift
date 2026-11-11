@@ -505,13 +505,13 @@ private struct OrgDetail: View {
             }
             .contextMenu(forSelectionType: UUID.self) { ids in
                 if ids.count == 1, let id = ids.first {
-                    Button("Open") { openWindow(id: OrgWindows.item, value: id) }
+                    Button("Open") { open(id) }
                     Button("Edit Note…") { editingNote = id; noteText = orgs.item(id)?.note ?? "" }
                     Divider()
                 }
                 if !ids.isEmpty { Button(ids.count == 1 ? "Delete…" : "Delete \(ids.count) Items…") { selection = ids; confirmDelete = true } }
             } primaryAction: { ids in
-                for id in ids.prefix(5) { openWindow(id: OrgWindows.item, value: id) }   // not a window per item for a big selection
+                for id in ids.prefix(5) { open(id) }   // not a window per item for a big selection
             }
             .onDeleteCommand { if !selection.isEmpty { confirmDelete = true } }
             .overlay {
@@ -523,7 +523,7 @@ private struct OrgDetail: View {
             }
 
             HStack {
-                Button("Open") { for id in selection { openWindow(id: OrgWindows.item, value: id) } }
+                Button("Open") { for id in selection.prefix(5) { open(id) } }
                     .disabled(selection.isEmpty)
                 Button("Run Survey…") { openWindow(id: OrgWindows.setup, value: orgID) }
                     .disabled(SurveyRunner.shared.running || model.isScanning)
@@ -555,6 +555,17 @@ private struct OrgDetail: View {
     }
 
     /// Opens DNS Lookup (looking up `domain` right away, if given); its Save to Organization offers this one first.
+    /// A saved Wi-Fi heatmap opens in the Wi-Fi Heatmap window (floor plan and all, ready to measure more);
+    /// anything else opens its saved table.
+    private func open(_ id: UUID) {
+        if let item = orgs.item(id), let h = orgs.heatmap(for: item) {
+            HeatmapWindow.show(h.id, linking: item.id)
+            openWindow(id: ToolWindow.heatmap)
+        } else {
+            openWindow(id: OrgWindows.item, value: id)
+        }
+    }
+
     private func toggle(_ id: UUID) {
         if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
     }
@@ -606,6 +617,7 @@ private struct OrgDetail: View {
 struct SavedItemView: View {
     let itemID: UUID?
     @ObservedObject private var orgs = OrgStore.shared
+    @Environment(\.openWindow) private var openWindow
     /// Same switch as the DNS Lookup tool.
     @AppStorage("dnsFollowCNAMEs") private var follow = false
 
@@ -621,6 +633,10 @@ struct SavedItemView: View {
                     Image(systemName: item.kind.symbol).foregroundStyle(.secondary)
                     Text(item.title).font(.title3.weight(.semibold))
                     Spacer()
+                    if let h = orgs.heatmap(for: item) {
+                        Button("Open Heatmap") { HeatmapWindow.show(h.id, linking: item.id); openWindow(id: ToolWindow.heatmap) }
+                            .help("Open it in Wi-Fi Heatmap, with its floor plan, to look at or measure more")
+                    }
                     if item.kind == .dns {
                         Toggle("Follow CNAMEs to other domains", isOn: $follow)
                             .toggleStyle(.checkbox)

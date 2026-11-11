@@ -2,9 +2,19 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+/// Opening a particular heatmap from elsewhere (an organization's saved entry).
+enum HeatmapWindow {
+    @MainActor static func show(_ id: UUID, linking entry: UUID? = nil) {
+        UserDefaults.standard.set(id.uuidString, forKey: "heatmap.current")
+        // An entry saved before heatmaps were linked gets linked now, so saving again updates it.
+        if let entry, OrgStore.shared.item(entry)?.heatmapID == nil { OrgStore.shared.updateItem(entry) { $0.heatmapID = id } }
+    }
+}
+
 /// Tools › Wi-Fi Heatmap: load a floor plan, click where you're standing to measure, then see the map.
 struct HeatmapView: View {
     @ObservedObject private var store = HeatmapStore.shared
+    @ObservedObject private var orgs = OrgStore.shared
     @StateObject private var meter = HeatMeter()
     @ObservedObject private var location = LocationPermission.shared
     @AppStorage("heatmap.current") private var currentID = ""
@@ -31,7 +41,7 @@ struct HeatmapView: View {
     @State private var heat: HeatResult? = nil
     @State private var dragging: (id: UUID, to: CGPoint)? = nil
 
-    enum NameAsk: Identifiable { case new, rename, ap(String); var id: String { "\(self)" } }
+    enum NameAsk: Identifiable { case new, rename, copy, ap(String); var id: String { "\(self)" } }
 
     private var survey: HeatSurvey? { store.survey(UUID(uuidString: currentID)) ?? store.surveys.first }
     private var filter: HeatFilter {
@@ -81,19 +91,27 @@ struct HeatmapView: View {
     private var toolbar: some View {
         HStack(spacing: 10) {
             Menu(survey?.name ?? "No heatmap") {
-                ForEach(store.surveys) { s in
-                    Button { currentID = s.id.uuidString; selected = nil } label: {
-                        if s.id == survey?.id { Label(s.name, systemImage: "checkmark") } else { Text(s.name) }
-                    }
+                // Grouped like saved scans: each organization's heatmaps, then the standalone ones.
+                ForEach(orgs.sortedOrgs.filter { o in store.surveys.contains { $0.orgID == o.id } }) { o in
+                    Section(o.name) { ForEach(store.surveys.filter { $0.orgID == o.id }) { s in pick(s) } }
                 }
+                let loose = store.surveys.filter { $0.orgID == nil || orgs.org($0.orgID) == nil }
+                if !loose.isEmpty { Section("Standalone") { ForEach(loose) { s in pick(s) } } }
                 if !store.surveys.isEmpty { Divider() }
                 Button("New Heatmap…") { nameText = store.uniqueName("Floor 1"); naming = .new }
-                if survey != nil {
-                    Button("Rename…") { nameText = survey?.name ?? ""; naming = .rename }
+                if let s = survey {
+                    Button("Save as New Heatmap…") { nameText = store.uniqueName(s.name + " copy"); naming = .copy }
+                        .help("A separate copy with the same floor plan and spots, standalone until you save it to an organization")
+                    Button("Rename…") { nameText = s.name; naming = .rename }
                     Button("Move to Trash…") { confirmDelete = true }
                 }
             }
             .fixedSize()
+            if let s = survey {
+                Text(orgs.org(s.orgID).map { "in \($0.name)" } ?? "standalone")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help("Heatmaps save themselves as you measure. Save to Organization files it with an organization; saving again updates that entry.")
+            }
             if survey != nil {
                 Button("Floor Plan…") { pickPlan() }
                 Button(scaling ? "Cancel Scale" : "Set Scale") {
@@ -113,6 +131,14 @@ struct HeatmapView: View {
                     Button("Done Walking") { tab = .map }.keyboardShortcut(.defaultAction).disabled(s.spots.isEmpty)
                 } else {
                     Button("Export PNG…") { exportPNG(s) }.disabled(s.spots.isEmpty)
+                    if let o = orgs.org(s.orgID) {
+                        // Already filed with an organization: one click brings its entry up to date.
+                        Button("Update in \(o.name)") {
+                            if let d = Heatmap.draft(s, filter: filter, coverage: heat?.coverage ?? HeatCoverage()) { orgs.save(d, to: o.id) }
+                        }
+                        .disabled(s.spots.isEmpty)
+                        .help("Saves the spots measured since, over the entry already in \(o.name)")
+                    }
                     SaveToOrgButton(enabled: !s.spots.isEmpty, auto: false) {
                         Heatmap.draft(s, filter: filter, coverage: heat?.coverage ?? HeatCoverage())
                     }
@@ -635,6 +661,7 @@ struct HeatmapView: View {
     private var nameTitle: String {
         switch naming {
         case .new: return "New Heatmap"
+        case .copy: return "Save as New Heatmap"
         case .rename: return "Rename Heatmap"
         case .ap: return "Name This Access Point"
         case nil: return ""
@@ -647,6 +674,10 @@ struct HeatmapView: View {
         case .new:
             let id = store.create(name: name.isEmpty ? "Floor 1" : name)
             currentID = id.uuidString; tab = .walk; selected = nil
+        case .copy:
+            if let s = survey, let id = store.duplicate(s.id, name: name.isEmpty ? s.name + " copy" : name) {
+                currentID = id.uuidString; tab = .walk; selected = nil
+            }
         case .rename:
             if let s = survey, !name.isEmpty { store.update(s.id) { $0.name = name } }
         case .ap(let bssid):
@@ -654,6 +685,12 @@ struct HeatmapView: View {
         case nil: break
         }
         naming = nil
+    }
+
+    @ViewBuilder private func pick(_ s: HeatSurvey) -> some View {
+        Button { currentID = s.id.uuidString; selected = nil } label: {
+            if s.id == survey?.id { Label(s.name, systemImage: "checkmark") } else { Text(s.name) }
+        }
     }
 
     private func pickPlan() {

@@ -145,6 +145,8 @@ struct SavedItem: Codable, Identifiable, Hashable {
     /// Items made by the same site survey share this.
     var surveyID: UUID? = nil
     var table: SavedTable
+    /// A saved Wi-Fi heatmap: the heatmap it came from (Opening it opens that heatmap, not just the table).
+    var heatmapID: UUID? = nil
 
     init(orgID: UUID, kind: Kind, title: String, summary: String, table: SavedTable, siteName: String = "",
          note: String = "", surveyID: UUID? = nil) {
@@ -159,6 +161,8 @@ struct SavedDraft {
     var title: String
     var summary: String
     var table: SavedTable
+    /// For a Wi-Fi heatmap: which one, so saving it again updates the same entry.
+    var heatmapID: UUID? = nil
 }
 
 struct OrgData: Codable {
@@ -297,8 +301,34 @@ final class OrgStore: ObservableObject {
     }
 
     func save(_ draft: SavedDraft, to org: UUID, note: String = "", siteName: String = "", surveyID: UUID? = nil) {
-        add(SavedItem(orgID: org, kind: draft.kind, title: draft.title, summary: draft.summary, table: draft.table,
-                      siteName: siteName, note: note, surveyID: surveyID))
+        // A heatmap saved here before is updated in place (measured some more, renamed), not added twice.
+        if let h = draft.heatmapID, let i = Self.heatmapEntry(h, title: draft.title, org: org, in: items) {
+            items[i].title = draft.title; items[i].summary = draft.summary; items[i].table = draft.table
+            items[i].date = Date(); items[i].heatmapID = h
+            if !note.isEmpty { items[i].note = note }
+            save()
+        } else {
+            var item = SavedItem(orgID: org, kind: draft.kind, title: draft.title, summary: draft.summary, table: draft.table,
+                                 siteName: siteName, note: note, surveyID: surveyID)
+            item.heatmapID = draft.heatmapID
+            add(item)
+        }
+        if let h = draft.heatmapID { HeatmapStore.shared.update(h) { $0.orgID = org } }
+    }
+
+    /// The organization's entry for this heatmap: by its id, or (saved before heatmaps were linked) by its title.
+    nonisolated static func heatmapEntry(_ heatmap: UUID, title: String, org: UUID, in list: [SavedItem]) -> Int? {
+        list.firstIndex { $0.orgID == org && $0.kind == .heatmap && $0.heatmapID == heatmap }
+            ?? list.firstIndex { $0.orgID == org && $0.kind == .heatmap && $0.heatmapID == nil && $0.title == title }
+    }
+
+    /// The heatmap a saved entry is for: its link, else (older entries) a heatmap with the name in its title.
+    func heatmap(for item: SavedItem) -> HeatSurvey? {
+        guard item.kind == .heatmap else { return nil }
+        let heat = HeatmapStore.shared
+        if let s = heat.survey(item.heatmapID) { return s }
+        let name = item.title.replacingOccurrences(of: "Wi-Fi heatmap · ", with: "")
+        return heat.surveys.first { $0.name == name && $0.orgID == item.orgID } ?? heat.surveys.first { $0.name == name }
     }
 
     func updateItem(_ id: UUID, _ change: (inout SavedItem) -> Void) {

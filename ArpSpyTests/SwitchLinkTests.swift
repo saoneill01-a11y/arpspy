@@ -122,3 +122,52 @@ final class DNSPartTests: XCTestCase {
         XCTAssertFalse(SavedItem(orgID: UUID(), kind: .ping, title: "Domain and certificate expiry · x", summary: "", table: t).isExpiryCheck)
     }
 }
+
+/// Saved heatmaps open the real heatmap, saving again updates the same entry, and Save as New makes a separate copy.
+@MainActor
+final class HeatmapSaveTests: XCTestCase {
+    func testSavingAgainFindsTheSameEntry() {
+        let org = UUID(), other = UUID(), heat = UUID()
+        let t = SavedTable(header: [], rows: [])
+        var linked = SavedItem(orgID: org, kind: .heatmap, title: "Wi-Fi heatmap · Floor 1", summary: "", table: t)
+        linked.heatmapID = heat
+        let old = SavedItem(orgID: org, kind: .heatmap, title: "Wi-Fi heatmap · Floor 2", summary: "", table: t)   // before links
+        let elsewhere = SavedItem(orgID: other, kind: .heatmap, title: "Wi-Fi heatmap · Floor 1", summary: "", table: t)
+        let list = [elsewhere, old, linked]
+        XCTAssertEqual(OrgStore.heatmapEntry(heat, title: "Wi-Fi heatmap · Floor 1 renamed", org: org, in: list), 2)   // by link
+        XCTAssertEqual(OrgStore.heatmapEntry(UUID(), title: "Wi-Fi heatmap · Floor 2", org: org, in: list), 1)          // by title
+        XCTAssertNil(OrgStore.heatmapEntry(UUID(), title: "Wi-Fi heatmap · Floor 3", org: org, in: list))              // a new one
+        XCTAssertNil(OrgStore.heatmapEntry(heat, title: "x", org: UUID(), in: list))                                   // another org
+    }
+
+    func testSaveAsNewCopiesPlanAndSpots() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("heatmap-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = HeatmapStore(folder: folder)
+        let id = store.create(name: "Floor 1")
+        // A small plan picture and one spot.
+        let img = NSImage(size: NSSize(width: 4, height: 4)); img.lockFocus(); NSColor.white.set(); NSRect(x: 0, y: 0, width: 4, height: 4).fill(); img.unlockFocus()
+        let png = folder.appendingPathComponent("in.png")
+        try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(img.tiffRepresentation))?.representation(using: .png, properties: [:])).write(to: png)
+        try store.setPlan(id, from: png)
+        store.update(id) { $0.spots = [HeatSpot(x: 10, y: 20, readings: [])]; $0.orgID = UUID() }
+        let copyID = try XCTUnwrap(store.duplicate(id, name: "Floor 1 copy"))
+        let copy = try XCTUnwrap(store.survey(copyID)), original = try XCTUnwrap(store.survey(id))
+        XCTAssertNotEqual(copyID, id)
+        XCTAssertEqual(copy.name, "Floor 1 copy")
+        XCTAssertNil(copy.orgID)                          // standalone until saved to an organization
+        XCTAssertNotNil(original.orgID)
+        XCTAssertEqual(copy.spots.count, 1)
+        XCTAssertNotNil(store.plan(copy))                 // the floor plan came along
+        // Both are on disk, separately.
+        let reloaded = HeatmapStore(folder: folder)
+        XCTAssertEqual(Set(reloaded.surveys.map(\.id)), [id, copyID])
+    }
+
+    func testDraftCarriesTheHeatmap() throws {
+        var s = HeatSurvey(name: "Floor 1")
+        s.spots = [HeatSpot(x: 1, y: 1, readings: [])]
+        let d = try XCTUnwrap(Heatmap.draft(s, filter: HeatFilter(ssid: nil), coverage: HeatCoverage()))
+        XCTAssertEqual(d.heatmapID, s.id)
+    }
+}
