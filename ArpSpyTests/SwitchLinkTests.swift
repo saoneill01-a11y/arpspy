@@ -110,3 +110,15 @@ final class OrgTabsTests: XCTestCase {
         XCTAssertEqual(SavedItem.Filter.allCases.map(\.rawValue), ["Site Surveys", "Network Scans", "DNS", "Ports", "Wi-Fi Heatmaps", "Other"])
     }
 }
+
+final class DNSPartTests: XCTestCase {
+    func testExpiryChecksAreSeparate() {
+        let t = SavedTable(header: [], rows: [])
+        func dns(_ title: String) -> SavedItem { SavedItem(orgID: UUID(), kind: .dns, title: title, summary: "", table: t) }
+        XCTAssertTrue(dns("Domain and certificate expiry · example-a.com").isExpiryCheck)
+        for title in ["DNS lookup · example-a.com (All)", "Email check · example-a.com", "Compare servers · example-a.com", "Reverse lookup · 10.20.30.0/24"] {
+            XCTAssertFalse(dns(title).isExpiryCheck, title)
+        }
+        XCTAssertFalse(SavedItem(orgID: UUID(), kind: .ping, title: "Domain and certificate expiry · x", summary: "", table: t).isExpiryCheck)
+    }
+}

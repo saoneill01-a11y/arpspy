@@ -325,6 +325,8 @@ private struct OrgDetail: View {
     @State private var filter = SavedItem.Filter.surveys
     /// Surveys opened on the Site Surveys tab (they start closed).
     @State private var expanded = Set<UUID>()
+    /// The DNS tab's switch: lookups (Look Up, Email Check, Compare Servers, Reverse Subnet) or expiry checks.
+    @State private var dnsPart = SavedItem.DNSPart.lookups
     @State private var askPortTarget = false
     @State private var portTarget = ""
     @State private var selection = Set<UUID>()
@@ -337,6 +339,9 @@ private struct OrgDetail: View {
     private var shown: [(item: SavedItem, indented: Bool)] {
         let list = orgs.items(for: orgID)
         if filter == .surveys { return OrgStore.surveyRows(list, expanded: expanded) }
+        if filter == .dns {
+            return list.filter { $0.kind == .dns && $0.isExpiryCheck == (dnsPart == .expiry) }.map { ($0, false) }
+        }
         return list.filter { $0.kind.group == filter }.map { ($0, false) }
     }
 
@@ -411,7 +416,7 @@ private struct OrgDetail: View {
                     .fixedSize()
                     .help("Traceroutes, speed tests and connection info are saved here automatically when they finish. Ping and Wi-Fi keep running, so save those with their Save to Organization button.")
                 }
-                if filter == .dns {
+                if filter == .dns && dnsPart == .lookups {
                     let domains = org?.domains ?? []
                     if domains.count > 1 {
                         Menu {
@@ -425,6 +430,21 @@ private struct OrgDetail: View {
                             .help(domains.first.map { "Looks up \($0) (All) and saves the result here automatically." } ?? "Opens DNS Lookup. Each finished lookup is saved here automatically.")
                     }
                 }
+                if filter == .dns && dnsPart == .expiry {
+                    let domains = org?.domains ?? []
+                    if domains.count > 1 {
+                        Menu {
+                            ForEach(domains, id: \.self) { d in Button(d) { newExpiry(d) } }
+                            Divider()
+                            Button("Other Domain…") { newExpiry("") }
+                        } label: { Label("New Expiry Check", systemImage: "plus") }
+                        .fixedSize()
+                    } else {
+                        Button { newExpiry(domains.first ?? "") } label: { Label("New Expiry Check", systemImage: "plus") }
+                            .help(domains.first.map { "Checks when \($0) and its HTTPS certificates expire, and saves the result here automatically." }
+                                  ?? "Opens DNS Lookup on Expiry. Each finished check is saved here automatically.")
+                    }
+                }
             }
 
             .alert("New Port Scan", isPresented: $askPortTarget) {
@@ -434,6 +454,17 @@ private struct OrgDetail: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("The address to check for open ports (one IPv4 address, like 10.20.30.5). The result is saved in \(org?.name ?? "this organization").")
+            }
+
+            if filter == .dns {
+                let dnsItems = orgs.items(for: orgID).filter { $0.kind == .dns }
+                let expiryCount = dnsItems.filter(\.isExpiryCheck).count
+                Picker("", selection: $dnsPart) {
+                    Text("Lookups (\(dnsItems.count - expiryCount))").tag(SavedItem.DNSPart.lookups)
+                    Text("Expiry (\(expiryCount))").tag(SavedItem.DNSPart.expiry)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                .help("Lookups: DNS lookups, email checks, server comparisons and reverse lookups. Expiry: domain and certificate expiry checks.")
             }
 
             List(selection: $selection) {
@@ -506,7 +537,7 @@ private struct OrgDetail: View {
             }
         }
         .padding(16)
-        .onChange(of: orgID) { selection = []; filter = .surveys; expanded = [] }
+        .onChange(of: orgID) { selection = []; filter = .surveys; expanded = []; dnsPart = .lookups }
         .confirmationDialog(selection.count == 1 ? "Delete this saved item?" : "Delete \(selection.count) saved items?",
                             isPresented: $confirmDelete) {
             Button("Delete", role: .destructive) { orgs.deleteItems(selection); selection = [] }
@@ -519,6 +550,13 @@ private struct OrgDetail: View {
     }
 
     /// Opens DNS Lookup (looking up `domain` right away, if given); its Save to Organization offers this one first.
+    /// Opens DNS Lookup on its Expiry tab and checks `domain` right away (blank: just opens it).
+    private func newExpiry(_ domain: String) {
+        model.preferredOrgID = orgID
+        orgs.launch(from: orgID)
+        openWindow(id: ToolWindow.dns, value: DNSView.expiryPrefix + domain)
+    }
+
     private func newDNS(_ domain: String?) {
         model.preferredOrgID = orgID
         orgs.launch(from: orgID)

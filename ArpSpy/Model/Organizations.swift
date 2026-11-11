@@ -124,6 +124,14 @@ struct SavedItem: Codable, Identifiable, Hashable {
         var id: String { rawValue }
     }
 
+    /// The DNS tab's Expiry side: domain and certificate expiry checks (the rest of DNS is Lookups).
+    var isExpiryCheck: Bool { kind == .dns && title.hasPrefix("Domain and certificate expiry") }
+
+    enum DNSPart: String, CaseIterable, Identifiable {
+        case lookups = "Lookups", expiry = "Expiry"
+        var id: String { rawValue }
+    }
+
     var id = UUID()
     var orgID: UUID
     var kind: Kind

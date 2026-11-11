@@ -14,6 +14,8 @@ import UniformTypeIdentifiers
     @Published var marks: [String: Mark] = [:]
     /// Goes up by one when Stop is pressed; every tab drops what it was doing.
     @Published var stopToken = 0
+    /// Goes up by one to run only the Expiry tab (New expiry check from an organization).
+    @Published var expiryToken = 0
     /// True after Stop until something runs again, so a stopped tab shows no mark instead of a tick.
     private var stopped = false
 
@@ -59,7 +61,14 @@ import UniformTypeIdentifiers
 /// The DNS Lookup window: one domain box on top runs Look Up, Email Check, Compare Servers and Expiry
 /// together; Reverse Subnet has its own range box.
 struct DNSView: View {
+    /// A name to look up, or "expiry:<domain>" to open on Expiry and check just that (New expiry check).
     let initial: String?
+    static let expiryPrefix = "expiry:"
+    private var expiryDomain: String? {
+        guard let i = initial, i.hasPrefix(Self.expiryPrefix) else { return nil }
+        return String(i.dropFirst(Self.expiryPrefix.count))
+    }
+    private var lookUpName: String? { expiryDomain == nil ? initial : nil }
     @AppStorage("dnsTab") private var tab = "lookup"
     @StateObject private var run = DNSRun()
     @Environment(\.theme) private var theme
@@ -93,7 +102,7 @@ struct DNSView: View {
             .padding(.horizontal, 16)
             // Every tab stays alive (and keeps its results) while another is shown.
             ZStack {
-                DNSLookUpPanel(initial: initial, run: run).opacity(tab == "lookup" ? 1 : 0).allowsHitTesting(tab == "lookup")
+                DNSLookUpPanel(initial: lookUpName, run: run).opacity(tab == "lookup" ? 1 : 0).allowsHitTesting(tab == "lookup")
                 EmailCheckPanel(run: run).opacity(tab == "email" ? 1 : 0).allowsHitTesting(tab == "email")
                 CompareServersPanel(run: run).opacity(tab == "compare" ? 1 : 0).allowsHitTesting(tab == "compare")
                 ExpiryPanel(run: run).opacity(tab == "expiry" ? 1 : 0).allowsHitTesting(tab == "expiry")
@@ -101,7 +110,15 @@ struct DNSView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 460)
-        .onAppear { if initial != nil { tab = "lookup" } }
+        .onAppear {
+            if let d = expiryDomain {
+                tab = "expiry"
+                run.domain = d
+                if !d.isEmpty { DispatchQueue.main.async { run.expiryToken += 1 } }
+            } else if initial != nil {
+                tab = "lookup"
+            }
+        }
     }
 
     private func tabButton(_ key: String, _ label: String) -> some View {
@@ -415,6 +432,7 @@ struct ExpiryPanel: View {
         .modifier(BusyMark(busy: busy))
         .onChange(of: busy) { _, on in run.set("expiry", busy: on, warn: result.map(needsLook) ?? false) }
         .onChange(of: run.token) { _, _ in if !run.lookUpOnly { go() } else { result = nil; checked = "" } }
+        .onChange(of: run.expiryToken) { _, _ in go() }
         .onChange(of: run.stopToken) { _, _ in stop() }
         .onDisappear { task?.cancel() }
     }
