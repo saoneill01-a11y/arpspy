@@ -322,3 +322,80 @@ final class APGroupingTests: XCTestCase {
         XCTAssertEqual(Heatmap.value(spots[0], mode: .oneAP, filter: HeatFilter(ssid: "N", bssid: "K", radios: [a, b])), -40)
     }
 }
+
+/// Floor plan over the map picture, and the same-channel highlight.
+@MainActor
+final class OverlayAndClashTests: XCTestCase {
+    /// A PNG of `w`×`h` filled with `bg`, with a `fg` square of `side` at (x, y) from the top left.
+    private func png(_ w: Int, _ h: Int, bg: NSColor, fg: NSColor? = nil, square: (x: Int, y: Int, side: Int)? = nil) -> Data {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        bg.setFill(); NSRect(x: 0, y: 0, width: w, height: h).fill()
+        if let fg, let q = square { fg.setFill(); NSRect(x: q.x, y: h - q.y - q.side, width: q.side, height: q.side).fill() }
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])!
+    }
+
+    func testWhiteBackgroundIsRemoved() throws {
+        let data = try XCTUnwrap(Heatmap.stripBackground(png(40, 40, bg: .white, fg: .black, square: (10, 10, 10))))
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: data))
+        XCTAssertLessThan(rep.colorAt(x: 2, y: 2)!.alphaComponent, 0.05)           // paper: clear
+        XCTAssertGreaterThan(rep.colorAt(x: 15, y: 15)!.alphaComponent, 0.95)      // wall: kept
+        let red = try XCTUnwrap(Heatmap.stripBackground(png(10, 10, bg: NSColor(red: 1, green: 0.8, blue: 0.8, alpha: 1))))
+        XCTAssertGreaterThan(NSBitmapImageRep(data: red)!.colorAt(x: 5, y: 5)!.alphaComponent, 0.95)   // coloured areas stay
+    }
+
+    func testPlanIsPlacedOnTheMap() throws {
+        let base = NSImage(data: png(100, 100, bg: .blue))!
+        let over = NSImage(data: png(10, 10, bg: .black))!
+        let o = HeatOverlay(cx: 25, cy: 25, width: 10, rotation: 0, opacity: 1)
+        let data = try XCTUnwrap(Heatmap.composite(base: base, basePixels: CGSize(width: 100, height: 100), overlay: over,
+                                                   overlayPixels: CGSize(width: 10, height: 10), o: o))
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: data))
+        XCTAssertEqual(rep.pixelsWide, 100)
+        XCTAssertLessThan(rep.colorAt(x: 25, y: 25)!.brightnessComponent, 0.1)       // the plan, top left
+        XCTAssertGreaterThan(rep.colorAt(x: 75, y: 75)!.blueComponent, 0.9)          // the map elsewhere
+        XCTAssertGreaterThan(rep.colorAt(x: 25, y: 75)!.blueComponent, 0.9)          // not upside down
+    }
+
+    func testOverlayFlowKeepsSizeAndScale() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("overlay-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let store = HeatmapStore(folder: folder)
+        let id = store.create(name: "Yard")
+        let mapPNG = folder.appendingPathComponent("map.png"); try png(300, 200, bg: .green).write(to: mapPNG)
+        try store.setPlan(id, from: mapPNG)
+        store.update(id) { $0.scale = HeatScale(pixelsPerUnit: 3) }
+        store.keepPlanAsBase(id)
+        XCTAssertEqual(store.survey(id)?.baseFile, "base.png")
+        let planPNG = folder.appendingPathComponent("floor.png"); try png(80, 60, bg: .white, fg: .black, square: (20, 20, 20)).write(to: planPNG)
+        try store.setOverlay(id, from: planPNG)
+        var o = try XCTUnwrap(store.survey(id)?.overlay)
+        XCTAssertEqual(o.cx, 150); XCTAssertEqual(o.width, 150)                     // starts centred, half as wide
+        o.rotation = 90
+        try store.applyOverlay(id, o)
+        let s = try XCTUnwrap(store.survey(id))
+        XCTAssertEqual(s.planWidth, 300); XCTAssertEqual(s.planHeight, 200)            // same size as the map picture…
+        XCTAssertEqual(s.scale?.pixelsPerUnit, 3)                                     // …so the scale still holds
+        XCTAssertEqual(s.overlay?.rotation, 90)
+        store.removeOverlay(id)
+        XCTAssertNil(store.survey(id)?.overlay)
+        XCTAssertEqual(store.survey(id)?.baseFile, "base.png")
+    }
+
+    func testSameChannelClashes() {
+        func ap(_ key: String, _ band: String, _ ch: Int, _ width: Int = 20) -> HeatAP {
+            HeatAP(key: key, bssid: key, ssid: "N", channel: ch, band: band, widthMHz: width, best: -50, spotsHeard: 5, x: 0, y: 0,
+                   bandReadings: [HeatReading(ssid: "N", bssid: key, rssi: -50, channel: ch, band: band, widthMHz: width)])
+        }
+        let cs = Heatmap.channelClashes([ap("A", "5 GHz", 36, 80), ap("B", "5 GHz", 44, 80), ap("C", "5 GHz", 149, 80), ap("D", "2.4 GHz", 6)])
+        XCTAssertEqual(cs.count, 1)                                     // 36 and 44 at 80 MHz overlap; 149 doesn't; 2.4 GHz is another band
+        XCTAssertEqual(Set([cs[0].a, cs[0].b]), ["A", "B"])
+        XCTAssertEqual(cs[0].label, "ch 36 and 44")
+        XCTAssertTrue(Heatmap.channelClashes([ap("A", "2.4 GHz", 1), ap("B", "2.4 GHz", 11)]).isEmpty)
+        XCTAssertEqual(Heatmap.channelClashes([ap("A", "2.4 GHz", 6), ap("B", "2.4 GHz", 6)]).first?.label, "ch 6")
+    }
+}

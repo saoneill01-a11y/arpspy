@@ -64,6 +64,15 @@ struct HeatmapView: View {
     @State private var apBSSID: String? = nil
     @State private var hoveredAP: String? = nil
     @State private var showMapPicker = false
+    @State private var pendingOverlayAfterMap = false
+    @State private var showComposer = false
+    /// The spot or access point whose details pop up (clicked).
+    @State private var infoSpot: UUID? = nil
+    @State private var infoAP: String? = nil
+    /// Highlight › Same channel: rings access points that share a channel, with a line between each pair.
+    @AppStorage("heatmap.highlightChannels") private var highlightChannels = false
+    /// How solid the floor plan is drawn over the heat colours on the Map tab (0 = colours only).
+    @AppStorage("heatmap.planOpacity") private var planOpacity = 1.0
     @State private var draggingAP: (key: String, to: CGPoint)? = nil
     @State private var selected: UUID? = nil
 
@@ -121,9 +130,10 @@ struct HeatmapView: View {
         .task(id: heatKey) { await recompute() }
         .onChange(of: currentID) { zoom = 1 }
         .sheet(isPresented: $askLength) { scaleSheet }
-        .sheet(isPresented: $showMapPicker) {
+        .sheet(isPresented: $showMapPicker, onDismiss: { pendingOverlayAfterMap = false }) {
             MapPlanPicker { image, metresWide, metres in useMapPlan(image, metresWide: metresWide, metres: metres) }
         }
+        .sheet(isPresented: $showComposer) { composer }
         .alert(nameTitle, isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
             TextField("Name", text: $nameText)
             Button("OK") { finishNaming() }
@@ -171,6 +181,16 @@ struct HeatmapView: View {
                 Menu("Floor Plan") {
                     Button("From Apple Maps…") { showMapPicker = true }
                     Button("From a Picture or PDF…") { pickPlan() }
+                    Divider()
+                    Button("Lay a Floor Plan Over the Map…") {
+                        // Needs a map picture underneath: make one first if this heatmap doesn't have one.
+                        if survey?.baseFile != nil { pickOverlay() } else { pendingOverlayAfterMap = true; showMapPicker = true }
+                    }
+                    .help("Load a picture or PDF of the building, remove its white background and line it up on the satellite picture")
+                    if survey?.overlay != nil {
+                        Button("Adjust Floor Plan Overlay…") { showComposer = true }
+                        Button("Remove Floor Plan Overlay") { if let s = survey { store.removeOverlay(s.id) } }
+                    }
                 }
                 .fixedSize()
                 .help("Use an area of Apple Maps (the scale is set for you), or a picture or PDF of the building")
@@ -275,6 +295,7 @@ struct HeatmapView: View {
                     planPicture(s)
                         .frame(width: s.planWidth * f.k, height: s.planHeight * f.k)
                         .offset(x: f.origin.x, y: f.origin.y)
+                        .opacity(tab == .map ? planOpacity : 1)
                     if tab == .map, let img = heat?.image {
                         Image(decorative: img, scale: 1).resizable().interpolation(.high)
                             .frame(width: s.planWidth * f.k, height: s.planHeight * f.k)
@@ -285,6 +306,7 @@ struct HeatmapView: View {
                             .frame(width: s.planWidth * f.k, height: s.planHeight * f.k)
                             .offset(x: f.origin.x, y: f.origin.y)
                             .blendMode(.multiply)
+                            .opacity(planOpacity)
                             .allowsHitTesting(false)
                     }
                     if tab == .walk, s.spots.count > 1 {
@@ -294,6 +316,22 @@ struct HeatmapView: View {
                         .stroke(Color.accentColor.opacity(0.5), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
                         .allowsHitTesting(false)
                     }
+                    if tab == .map, highlightChannels, s.shownNetwork != nil {
+                        let shown = Dictionary(uniqueKeysWithValues: (heat?.aps ?? []).filter(\.worthShowing).map { ($0.key, $0) })
+                        ForEach(Array(clashes.enumerated()), id: \.offset) { _, c in
+                            if let a = shown[c.a], let b = shown[c.b] {
+                                let pa = view(a.x, a.y), pb = view(b.x, b.y)
+                                Path { p in p.move(to: pa); p.addLine(to: pb) }
+                                    .stroke(Self.clashColor(c.band), style: StrokeStyle(lineWidth: 3, dash: [8, 5]))
+                                    .allowsHitTesting(false)
+                                Text("\(c.label) · \(c.band)").font(.caption2.weight(.bold)).foregroundStyle(.white)
+                                    .padding(.horizontal, 5).padding(.vertical, 2)
+                                    .background(Capsule().fill(Self.clashColor(c.band)))
+                                    .position(x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    }
                     if tab == .map, s.shownNetwork != nil {
                         // One marker per access point. Guesses are faded with a "?"; drag one to where the AP really is.
                         ForEach((heat?.aps ?? []).filter(\.worthShowing)) { ap in
@@ -302,7 +340,10 @@ struct HeatmapView: View {
                                 .position(draggingAP?.key == ap.key ? draggingAP!.to : view(ap.x, ap.y))
                                 .onHover { inside in hoveredAP = inside ? ap.key : (hoveredAP == ap.key ? nil : hoveredAP) }
                                 .gesture(apDragGesture(ap, s, f))
-                                .onTapGesture { mode = .oneAP; apBSSID = ap.key }
+                                .onTapGesture { infoAP = ap.key }
+                                .popover(isPresented: Binding(get: { infoAP == ap.key }, set: { if !$0 { infoAP = nil } }), arrowEdge: .trailing) {
+                                    apInfo(ap, s)
+                                }
                                 .contextMenu { apMenu(ap, s) }
                         }
                     }
@@ -310,7 +351,10 @@ struct HeatmapView: View {
                         spotDot(spot, s)
                             .position(dragging?.id == spot.id ? dragging!.to : view(spot.x, spot.y))
                             .gesture(tab == .walk ? moveGesture(spot, s, f) : nil)
-                            .onTapGesture { selected = spot.id }
+                            .onTapGesture { selected = spot.id; infoSpot = spot.id }
+                            .popover(isPresented: Binding(get: { infoSpot == spot.id }, set: { if !$0 { infoSpot = nil } }), arrowEdge: .trailing) {
+                                spotInfo(spot, s)
+                            }
                             .contextMenu {
                                 Button("Delete Spot") { store.update(s.id) { $0.spots.removeAll { $0.id == spot.id } }; if selected == spot.id { selected = nil } }
                             }
@@ -424,6 +468,92 @@ struct HeatmapView: View {
         .help(spotHelp(spot, s))
     }
 
+    private var clashes: [Heatmap.ChannelClash] { Heatmap.channelClashes((heat?.aps ?? []).filter(\.worthShowing)) }
+
+    static func clashColor(_ band: String) -> Color {
+        band.hasPrefix("2") ? Color(red: 0.85, green: 0.25, blue: 0.2) : band.hasPrefix("6") ? Color.purple : Color(red: 0.9, green: 0.45, blue: 0.0)
+    }
+
+    /// The pop-up for a measured spot: where, when, what your network looked like there, and everything heard.
+    private func spotInfo(_ spot: HeatSpot, _ s: HeatSurvey) -> some View {
+        let n = (s.spots.firstIndex { $0.id == spot.id } ?? 0) + 1
+        let net = s.shownNetwork
+        let mine = spot.readings.filter { net == nil || $0.ssid == net }.sorted { $0.rssi > $1.rssi }
+        let others = spot.readings.filter { net != nil && $0.ssid != net }
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("Spot \(n)").font(.headline)
+            Text([spot.date.formatted(date: .abbreviated, time: .shortened),
+                  s.scale.map { sc in "\(Int((spot.x / sc.pixelsPerUnit).rounded())), \(Int((spot.y / sc.pixelsPerUnit).rounded())) \(sc.unit) from the top left" } ?? ""]
+                .filter { !$0.isEmpty }.joined(separator: " · "))
+                .font(.caption).foregroundStyle(.secondary)
+            if !spot.joinedSSID.isEmpty {
+                Text("Connected to \(spot.joinedSSID)" + (spot.joinedBSSID.isEmpty ? "" : " via \(s.apName(spot.joinedBSSID, ssid: spot.joinedSSID))"))
+                    .font(.callout)
+            }
+            if let p = spot.pingMs { Text("Ping to the router: \(Int(p.rounded())) ms").font(.callout) }
+            Divider()
+            Text(net.map { "\($0) here" } ?? "Networks here").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            if mine.isEmpty {
+                Text("Not heard at this spot.").font(.callout).foregroundStyle(.red)
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
+                    ForEach(Array(mine.prefix(8).enumerated()), id: \.offset) { _, r in
+                        GridRow {
+                            Text(s.apName(r.bssid, ssid: r.ssid)).lineLimit(1)
+                            Text("\(r.band) ch \(r.channel)").foregroundStyle(.secondary)
+                            Text(dBm(r.rssi)).monospacedDigit().fontWeight(.semibold).foregroundStyle(signalColor(r.rssi))
+                        }
+                        .font(.callout)
+                    }
+                }
+            }
+            Text("\(spot.readings.count) networks heard in all" + (others.isEmpty ? "" : ", \(Set(others.map(\.ssid)).count) of them other networks"))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(width: 330)
+        .textSelection(.enabled)
+    }
+
+    /// The pop-up for an access point: its radios, how loud it was, where it was heard, and what to do with it.
+    private func apInfo(_ ap: HeatAP, _ s: HeatSurvey) -> some View {
+        let clash = clashes.filter { $0.a == ap.key || $0.b == ap.key }
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(s.apName(ap.bssid, ssid: ap.ssid)).font(.headline)
+            Text(ap.placed ? "Placed by you" : "Position estimated from where it was loudest (drag it to place it)")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
+                ForEach(Array(ap.bandReadings.enumerated()), id: \.offset) { _, r in
+                    GridRow {
+                        Text(r.band).fontWeight(.medium)
+                        Text("ch \(r.channel) · \(r.widthMHz) MHz").foregroundStyle(.secondary)
+                        Text("best \(dBm(r.rssi))").monospacedDigit().foregroundStyle(signalColor(r.rssi))
+                    }
+                    .font(.callout)
+                }
+            }
+            Text("Heard at \(ap.spotsHeard) of \(s.spots.count) spots · \(ap.radios) radio\(ap.radios == 1 ? "" : "s")")
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(Array(clash.enumerated()), id: \.offset) { _, c in
+                let other = c.a == ap.key ? c.b : c.a
+                let name = (heat?.aps ?? []).first { $0.key == other }.map { s.apName($0.bssid, ssid: $0.ssid) } ?? other
+                Label("Shares \(c.label) (\(c.band)) with \(name)", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout).foregroundStyle(Self.clashColor(c.band))
+            }
+            Text(ap.radioList.joined(separator: "  ")).font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Show Only This") { mode = .oneAP; apBSSID = ap.key; infoAP = nil }
+                Button("Name…") { infoAP = nil; nameText = s.apNames[ap.key] ?? ""; naming = .ap(ap.key) }
+                if ap.placed { Button("Use Estimate") { store.update(s.id) { $0.apPlaces[ap.key] = nil }; infoAP = nil } }
+            }
+            .controlSize(.small)
+        }
+        .padding(14)
+        .frame(width: 340)
+        .textSelection(.enabled)
+    }
+
     private func spotHelp(_ spot: HeatSpot, _ s: HeatSurvey) -> String {
         let mine = spot.readings.filter(HeatFilter(ssid: s.shownNetwork).matches)
         let best = mine.first.map { "\(s.apName($0.bssid, ssid: $0.ssid)) \(dBm($0.rssi))" } ?? "Your network wasn’t heard"
@@ -460,7 +590,12 @@ struct HeatmapView: View {
                     .offset(x: 10, y: -10)
             }
         }
-        .opacity(ap.placed || selected || showName ? 1 : 0.6)
+        .overlay {
+            if highlightChannels, let c = clashes.first(where: { $0.a == ap.key || $0.b == ap.key }) {
+                Circle().stroke(Self.clashColor(c.band), lineWidth: 3).frame(width: 34, height: 34)
+            }
+        }
+        .opacity(ap.placed || selected || showName || (highlightChannels && clashes.contains { $0.a == ap.key || $0.b == ap.key }) ? 1 : 0.6)
         .overlay(alignment: .top) {
             if showName {
                 Text(name + (ap.placed ? "" : " (estimated)"))
@@ -775,6 +910,38 @@ struct HeatmapView: View {
             }
             Picker("Band", selection: $band) { ForEach(HeatBand.allCases) { Text($0.rawValue).tag($0) } }
                 .pickerStyle(.segmented)
+            if s.planFile != nil {
+                HStack(spacing: 8) {
+                    Text("Floor plan").foregroundStyle(.secondary)
+                    Slider(value: $planOpacity, in: 0...1).controlSize(.small)
+                        .help("Fade the floor plan to see the heat colours better")
+                        .accessibilityLabel("Floor plan visibility")
+                    Text("\(Int((planOpacity * 100).rounded()))%").font(.caption).monospacedDigit().foregroundStyle(.secondary).frame(width: 34, alignment: .trailing)
+                }
+            }
+        }
+        VStack(alignment: .leading, spacing: 6) {
+            section("Highlight")
+            Toggle("Same channel", isOn: $highlightChannels).toggleStyle(.checkbox)
+                .help("Rings your access points that share a channel and draws a line between each pair")
+            if highlightChannels {
+                let cs = clashes
+                if cs.isEmpty {
+                    Text("None of your access points share a channel.").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(cs.enumerated()), id: \.offset) { _, c in
+                        let aps = heat?.aps ?? []
+                        let na = aps.first { $0.key == c.a }.map { s.apName($0.bssid, ssid: $0.ssid) } ?? c.a
+                        let nb = aps.first { $0.key == c.b }.map { s.apName($0.bssid, ssid: $0.ssid) } ?? c.b
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Circle().fill(Self.clashColor(c.band)).frame(width: 8, height: 8)
+                            Text("\(na) and \(nb): \(c.label), \(c.band)").font(.caption).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Text("Access points on the same channel take turns, so both slow down where both reach. Give each a different channel, or lower their power.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
         if mode.isSignal, let c = heat?.coverage, c.measured {
             VStack(alignment: .leading, spacing: 8) {
@@ -950,9 +1117,38 @@ struct HeatmapView: View {
                 sv.scale = HeatScale(pixelsPerUnit: Heatmap.pixelsPerUnit(planWidth: sv.planWidth, metresWide: metresWide, metres: metres),
                                      metres: metres)
             }
+            // Keep the map picture by itself, so a floor plan can be laid over it later; a new map drops an old overlay.
+            store.keepPlanAsBase(s.id)
+            if pendingOverlayAfterMap { pendingOverlayAfterMap = false; DispatchQueue.main.async { pickOverlay() } }
             zoom = 1; scaling = false; scalePoints = []
         } catch {
             errorText = error.localizedDescription
+        }
+    }
+
+    /// Floor Plan › Lay a Floor Plan Over the Map: pick the picture or PDF, then line it up.
+    private func pickOverlay() {
+        guard let s = survey else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image, .pdf]
+        panel.message = "Choose a floor plan to lay over the map: a picture or PDF of the building."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try store.setOverlay(s.id, from: url); showComposer = true } catch { errorText = error.localizedDescription }
+    }
+
+    @ViewBuilder private var composer: some View {
+        if let s = survey, let o = s.overlay, let bURL = store.baseURL(s), let base = NSImage(contentsOf: bURL),
+           let px = Heatmap.pixelSize(bURL) {
+            OverlayComposer(base: base, basePixels: px, original: store.overlayPicture(s.id, original: true),
+                            stripped: store.overlayPicture(s.id, original: false), o: o) { done in
+                do { try store.applyOverlay(s.id, done) } catch { errorText = error.localizedDescription }
+            }
+        } else {
+            VStack(spacing: 12) {
+                Text("There’s no floor plan over a map in this heatmap yet.")
+                Button("Close") { showComposer = false }
+            }
+            .padding(30)
         }
     }
 
@@ -962,7 +1158,10 @@ struct HeatmapView: View {
         panel.allowedContentTypes = [.image, .pdf]
         panel.message = "Choose a floor plan: a picture or PDF of the building."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try store.setPlan(s.id, from: url) } catch { errorText = error.localizedDescription }
+        do {
+            try store.setPlan(s.id, from: url)
+            store.update(s.id) { $0.baseFile = nil; $0.overlay = nil }   // a plan of its own: no map underneath any more
+        } catch { errorText = error.localizedDescription }
     }
 
     private func exportPNG(_ s: HeatSurvey) {

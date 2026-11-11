@@ -57,6 +57,11 @@ struct HeatSurvey: Codable, Identifiable, Hashable, Sendable {
     var apPlaces: [String: HeatPlace] = [:]
     /// Radios combined or separated by hand (BSSID → the access point it belongs to), over the automatic grouping.
     var apOverrides: [String: String] = [:]
+    /// "base.png": the Apple Maps picture the plan was made from (kept so a floor plan can be laid over it).
+    var baseFile: String? = nil
+    /// A floor plan laid over the map picture: where it sits. Its picture is overlay.png (background removed) and
+    /// overlay-original.png (as loaded); plan.png is the two combined.
+    var overlay: HeatOverlay? = nil
     /// The network shown; nil = the one the Mac was joined to.
     var network: String? = nil
     var orgID: UUID? = nil
@@ -78,6 +83,8 @@ struct HeatSurvey: Codable, Identifiable, Hashable, Sendable {
         apNames = try c.decodeIfPresent([String: String].self, forKey: .apNames) ?? [:]
         apPlaces = try c.decodeIfPresent([String: HeatPlace].self, forKey: .apPlaces) ?? [:]
         apOverrides = try c.decodeIfPresent([String: String].self, forKey: .apOverrides) ?? [:]
+        baseFile = try c.decodeIfPresent(String.self, forKey: .baseFile)
+        overlay = try c.decodeIfPresent(HeatOverlay.self, forKey: .overlay)
         network = try c.decodeIfPresent(String.self, forKey: .network)
         orgID = try c.decodeIfPresent(UUID.self, forKey: .orgID)
     }
@@ -194,6 +201,8 @@ struct HeatAP: Identifiable, Hashable, Sendable {
     var bands: [String] = []
     /// Its radios' BSSIDs.
     var radioList: [String] = []
+    /// Its loudest reading on each band (that band's channel and width), 2.4 GHz first.
+    var bandReadings: [HeatReading] = []
     /// A guess from fewer than 3 spots is too rough to draw.
     var worthShowing: Bool { placed || spotsHeard >= 3 }
 }
@@ -378,6 +387,43 @@ enum Heatmap {
         return parts[1...4].joined(separator: ":") + ":" + String(last >> 4, radix: 16, uppercase: true)
     }
 
+    /// An access point's loudest reading per band.
+    static func bandBest(_ spots: [HeatSpot], radios: Set<String>, filter: HeatFilter) -> [HeatReading] {
+        var best: [String: HeatReading] = [:]
+        for s in spots {
+            for r in s.readings where radios.contains(r.bssid.uppercased()) && filter.matches(r) {
+                if let b = best[r.band], b.rssi >= r.rssi { continue }
+                best[r.band] = r
+            }
+        }
+        return best.values.sorted { $0.band < $1.band }
+    }
+
+    /// Two of your access points on the same (or an overlapping) channel in one band.
+    struct ChannelClash: Hashable, Sendable {
+        var a: String, b: String
+        var band: String
+        var channelA: Int, channelB: Int
+        /// "ch 36" or "ch 36 and 40"
+        var label: String { channelA == channelB ? "ch \(channelA)" : "ch \(channelA) and \(channelB)" }
+    }
+
+    /// Every pair of access points that share a channel on some band. Each pair hears the other's traffic as noise and
+    /// they take turns talking, so where both reach, both are slower.
+    static func channelClashes(_ aps: [HeatAP]) -> [ChannelClash] {
+        var out: [ChannelClash] = []
+        for (i, x) in aps.enumerated() {
+            for y in aps.dropFirst(i + 1) {
+                for rx in x.bandReadings {
+                    for ry in y.bandReadings where overlaps(rx, ry) {
+                        out.append(ChannelClash(a: x.key, b: y.key, band: rx.band, channelA: rx.channel, channelB: ry.channel))
+                    }
+                }
+            }
+        }
+        return out
+    }
+
     /// Whether two radios are probably the same access point. Makers number an AP's radios from one address by:
     /// - counting up the last byte (Cisco, Aruba, Ruckus, Ubiquiti's newer APs: …2C:71 / 2C:72 / 2C:73),
     /// - stepping a middle byte (Ubiquiti's older APs: 74:AC:B9:**2D**:B6:12 and 74:AC:B9:**2E**:B6:12),
@@ -482,7 +528,8 @@ enum Heatmap {
             let bands = Set(spots.flatMap { $0.readings }.filter { mine.contains($0.bssid.uppercased()) && filter.matches($0) }.map(\.band))
             return HeatAP(key: key, bssid: loudest.r.bssid, ssid: loudest.r.ssid, channel: loudest.r.channel, band: loudest.r.band,
                           widthMHz: loudest.r.widthMHz, best: loudest.r.rssi, spotsHeard: list.count, x: x, y: y,
-                          placed: place != nil, radios: mine.count, bands: bands.sorted(), radioList: mine.sorted())
+                          placed: place != nil, radios: mine.count, bands: bands.sorted(), radioList: mine.sorted(),
+                          bandReadings: bandBest(spots, radios: mine, filter: filter))
         }
         .sorted { ($0.best, $1.key) > ($1.best, $0.key) }
     }
@@ -579,7 +626,9 @@ final class HeatmapStore: ObservableObject {
         load()
     }
 
-    private func dir(_ id: UUID) -> URL { folder.appendingPathComponent(id.uuidString, isDirectory: true) }
+    func dir(_ id: UUID) -> URL { folder.appendingPathComponent(id.uuidString, isDirectory: true) }
+    /// Drops the remembered plan picture (after plan.png is rewritten).
+    func forgetPlan(_ id: UUID) { plans[id] = nil }
 
     func load() {
         let fm = FileManager.default
