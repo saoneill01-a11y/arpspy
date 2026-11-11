@@ -473,9 +473,13 @@ private struct OrgDetail: View {
                     let isSurveyHeader = filter == .surveys && i.kind == .survey
                     HStack(alignment: .top, spacing: 10) {
                         if isSurveyHeader {
-                            Image(systemName: expanded.contains(i.id) ? "chevron.down" : "chevron.right")
-                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 12).padding(.top, 3)
-                                .accessibilityLabel(expanded.contains(i.id) ? "Hide results" : "Show results")
+                            Button { toggle(i.id) } label: {
+                                Image(systemName: expanded.contains(i.id) ? "chevron.down" : "chevron.right")
+                                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 14, height: 14)
+                            }
+                            .buttonStyle(.plain).padding(.top, 2)
+                            .help(expanded.contains(i.id) ? "Hide what this survey found" : "Show what this survey found")
+                            .accessibilityLabel(expanded.contains(i.id) ? "Hide results" : "Show results")
                         }
                         Image(systemName: i.kind.symbol).foregroundStyle(.secondary).frame(width: 20)
                         VStack(alignment: .leading, spacing: 2) {
@@ -495,12 +499,6 @@ private struct OrgDetail: View {
                         }
                     }
                     .padding(.leading, row.indented ? 50 : 0)
-                    .contentShape(Rectangle())
-                    // Clicking a survey opens or closes its list of results (it's still selected, too).
-                    .simultaneousGesture(TapGesture().onEnded {
-                        guard isSurveyHeader else { return }
-                        if expanded.contains(i.id) { expanded.remove(i.id) } else { expanded.insert(i.id) }
-                    })
                     .tag(i.id)
                     .padding(.vertical, 2)
                 }
@@ -538,6 +536,13 @@ private struct OrgDetail: View {
         }
         .padding(16)
         .onChange(of: orgID) { selection = []; filter = .surveys; expanded = []; dnsPart = .lookups }
+        // Clicking a survey (selecting it) opens its results; its arrow opens and closes it. A tap gesture on the rows
+        // was tried first, but it took the clicks from the list, so rows could only be selected at their edges.
+        .onChange(of: selection) { old, new in
+            guard filter == .surveys, new.count == 1, let id = new.first, !old.contains(id),
+                  orgs.item(id)?.kind == .survey else { return }
+            expanded.insert(id)
+        }
         .confirmationDialog(selection.count == 1 ? "Delete this saved item?" : "Delete \(selection.count) saved items?",
                             isPresented: $confirmDelete) {
             Button("Delete", role: .destructive) { orgs.deleteItems(selection); selection = [] }
@@ -550,6 +555,10 @@ private struct OrgDetail: View {
     }
 
     /// Opens DNS Lookup (looking up `domain` right away, if given); its Save to Organization offers this one first.
+    private func toggle(_ id: UUID) {
+        if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+    }
+
     /// Opens DNS Lookup on its Expiry tab and checks `domain` right away (blank: just opens it).
     private func newExpiry(_ domain: String) {
         model.preferredOrgID = orgID
