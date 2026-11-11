@@ -66,6 +66,7 @@ struct HeatmapView: View {
     @State private var showMapPicker = false
     @State private var pendingOverlayAfterMap = false
     @State private var showComposer = false
+    @State private var askUseCurrentAsMap = false
     /// The spot or access point whose details pop up (clicked).
     @State private var infoSpot: UUID? = nil
     @State private var infoAP: String? = nil
@@ -134,6 +135,14 @@ struct HeatmapView: View {
             MapPlanPicker { image, metresWide, metres in useMapPlan(image, metresWide: metresWide, metres: metres) }
         }
         .sheet(isPresented: $showComposer) { composer }
+        .confirmationDialog("Lay the floor plan over this heatmap’s current picture?", isPresented: $askUseCurrentAsMap) {
+            Button("Use the Current Picture") {
+                if let s = survey { store.keepPlanAsBase(s.id); DispatchQueue.main.async { pickOverlay() } }
+            }
+            Button("Choose a Map Area…") { pendingOverlayAfterMap = true; showMapPicker = true }
+        } message: {
+            Text("Use the satellite picture this heatmap already has as the map underneath, so your spots and scale stay as they are. Or pick a new area from Apple Maps.")
+        }
         .alert(nameTitle, isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
             TextField("Name", text: $nameText)
             Button("OK") { finishNaming() }
@@ -183,8 +192,11 @@ struct HeatmapView: View {
                     Button("From a Picture or PDF…") { pickPlan() }
                     Divider()
                     Button("Lay a Floor Plan Over the Map…") {
-                        // Needs a map picture underneath: make one first if this heatmap doesn't have one.
-                        if survey?.baseFile != nil { pickOverlay() } else { pendingOverlayAfterMap = true; showMapPicker = true }
+                        // Needs a map picture underneath. A plan picture already here (a satellite image made before
+                        // ARPradar kept a copy, or a screenshot) can be that; otherwise pick a map area first.
+                        if survey?.baseFile != nil { pickOverlay() }
+                        else if survey?.planFile != nil { askUseCurrentAsMap = true }
+                        else { pendingOverlayAfterMap = true; showMapPicker = true }
                     }
                     .help("Load a picture or PDF of the building, remove its white background and line it up on the satellite picture")
                     if survey?.overlay != nil {
@@ -340,10 +352,7 @@ struct HeatmapView: View {
                                 .position(draggingAP?.key == ap.key ? draggingAP!.to : view(ap.x, ap.y))
                                 .onHover { inside in hoveredAP = inside ? ap.key : (hoveredAP == ap.key ? nil : hoveredAP) }
                                 .gesture(apDragGesture(ap, s, f))
-                                .onTapGesture { infoAP = ap.key }
-                                .popover(isPresented: Binding(get: { infoAP == ap.key }, set: { if !$0 { infoAP = nil } }), arrowEdge: .trailing) {
-                                    apInfo(ap, s)
-                                }
+                                .onTapGesture { infoAP = ap.key; infoSpot = nil }
                                 .contextMenu { apMenu(ap, s) }
                         }
                     }
@@ -351,10 +360,7 @@ struct HeatmapView: View {
                         spotDot(spot, s)
                             .position(dragging?.id == spot.id ? dragging!.to : view(spot.x, spot.y))
                             .gesture(tab == .walk ? moveGesture(spot, s, f) : nil)
-                            .onTapGesture { selected = spot.id; infoSpot = spot.id }
-                            .popover(isPresented: Binding(get: { infoSpot == spot.id }, set: { if !$0 { infoSpot = nil } }), arrowEdge: .trailing) {
-                                spotInfo(spot, s)
-                            }
+                            .onTapGesture { selected = spot.id; infoSpot = spot.id; infoAP = nil }
                             .contextMenu {
                                 Button("Delete Spot") { store.update(s.id) { $0.spots.removeAll { $0.id == spot.id } }; if selected == spot.id { selected = nil } }
                             }
@@ -417,6 +423,8 @@ struct HeatmapView: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25)))
+            // Details of the clicked spot or access point, always in the top-left corner of the map.
+            .overlay(alignment: .topLeading) { infoCard(s) }
             legend(s)
         }
         .padding(16)
@@ -472,6 +480,28 @@ struct HeatmapView: View {
 
     static func clashColor(_ band: String) -> Color {
         band.hasPrefix("2") ? Color(red: 0.85, green: 0.25, blue: 0.2) : band.hasPrefix("6") ? Color.purple : Color(red: 0.9, green: 0.45, blue: 0.0)
+    }
+
+    @ViewBuilder private func infoCard(_ s: HeatSurvey) -> some View {
+        let spot = infoSpot.flatMap { id in s.spots.first { $0.id == id } }
+        let ap = infoAP.flatMap { k in (heat?.aps ?? []).first { $0.key == k } }
+        if spot != nil || ap != nil {
+            ScrollView {
+                if let spot { spotInfo(spot, s) } else if let ap { apInfo(ap, s) }
+            }
+            .frame(maxHeight: 420)
+            .fixedSize(horizontal: true, vertical: false)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .windowBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.35)))
+            .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+            .overlay(alignment: .topTrailing) {
+                Button { infoSpot = nil; infoAP = nil } label: { Image(systemName: "xmark.circle.fill").font(.title3).foregroundStyle(.secondary) }
+                    .buttonStyle(.plain).padding(8)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityLabel("Close details")
+            }
+            .padding(10)
+        }
     }
 
     /// The pop-up for a measured spot: where, when, what your network looked like there, and everything heard.
