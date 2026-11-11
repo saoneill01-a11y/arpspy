@@ -248,3 +248,29 @@ final class HeatmapAPTests: XCTestCase {
         XCTAssertEqual(Heatmap.uniFiNames(NetMap(nodes: [ap]))[Heatmap.apKey("7A:AC:B9:12:34:56")], "Addition Hobby Room")
     }
 }
+
+import MapKit
+
+/// Floor Plan › From Apple Maps: the scale comes from the map.
+@MainActor
+final class MapPlanTests: XCTestCase {
+    func testPixelsPerUnit() {
+        // A 3000-pixel plan of an area 100 m wide: 30 px per metre, or about 9.14 px per foot.
+        XCTAssertEqual(Heatmap.pixelsPerUnit(planWidth: 3000, metresWide: 100, metres: true), 30, accuracy: 0.0001)
+        XCTAssertEqual(Heatmap.pixelsPerUnit(planWidth: 3000, metresWide: 100, metres: false), 9.144, accuracy: 0.001)
+    }
+
+    /// Takes a real Apple Maps picture (needs the internet), so it only runs when asked:
+    /// ARPRADAR_LIVE_MAP=1 TEST_RUNNER_ARPRADAR_LIVE_MAP=1 xcodebuild test … -only-testing:ArpSpyTests/MapPlanTests
+    func testLiveSnapshotWidth() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["ARPRADAR_LIVE_MAP"] == "1", "Live map test not asked for")
+        // A public place (Apple Park), 200 m east to west, in a square view.
+        let centre = CLLocationCoordinate2D(latitude: 37.3349, longitude: -122.0090)
+        let region = MKCoordinateRegion(center: centre, latitudinalMeters: 200, longitudinalMeters: 200)
+        let (image, metresWide) = try await MapPlanPicker.snapshot(region: region, viewSize: CGSize(width: 800, height: 800), style: .satellite)
+        XCTAssertEqual(image.size.width, 800, accuracy: 1)
+        // The same zoom as on screen, so it's the 200 m asked for (MapKit may widen the area slightly to fit).
+        XCTAssertEqual(metresWide, 200, accuracy: 30)
+        print("Live map snapshot: \(Int(image.size.width))×\(Int(image.size.height)) points, \(String(format: "%.1f", metresWide)) m wide")
+    }
+}

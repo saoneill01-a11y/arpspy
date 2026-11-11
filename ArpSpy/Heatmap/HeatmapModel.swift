@@ -360,6 +360,11 @@ enum Heatmap {
         return parts[1...4].joined(separator: ":") + ":" + String(last >> 4, radix: 16, uppercase: true)
     }
 
+    /// Plan pixels per foot (or metre) for a plan that's `metresWide` across in real life.
+    static func pixelsPerUnit(planWidth: Double, metresWide: Double, metres: Bool) -> Double {
+        planWidth / (metres ? metresWide : metresWide * 3.280839895)
+    }
+
     /// UniFi access points on a network map, by access point key (their radios' BSSIDs share it with the AP's MAC).
     static func uniFiNames(_ map: NetMap?) -> [String: String] {
         guard let map else { return [:] }

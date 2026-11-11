@@ -63,6 +63,7 @@ struct HeatmapView: View {
     /// The access point shown alone (an `apKey`), and the one the pointer is over.
     @State private var apBSSID: String? = nil
     @State private var hoveredAP: String? = nil
+    @State private var showMapPicker = false
     @State private var draggingAP: (key: String, to: CGPoint)? = nil
     @State private var selected: UUID? = nil
 
@@ -119,6 +120,9 @@ struct HeatmapView: View {
         .task(id: heatKey) { await recompute() }
         .onChange(of: currentID) { zoom = 1 }
         .sheet(isPresented: $askLength) { scaleSheet }
+        .sheet(isPresented: $showMapPicker) {
+            MapPlanPicker { image, metresWide, metres in useMapPlan(image, metresWide: metresWide, metres: metres) }
+        }
         .alert(nameTitle, isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
             TextField("Name", text: $nameText)
             Button("OK") { finishNaming() }
@@ -163,7 +167,12 @@ struct HeatmapView: View {
                     .help("Heatmaps save themselves as you measure. Save to Organization files it with an organization; saving again updates that entry.")
             }
             if survey != nil {
-                Button("Floor Plan…") { pickPlan() }
+                Menu("Floor Plan") {
+                    Button("From Apple Maps…") { showMapPicker = true }
+                    Button("From a Picture or PDF…") { pickPlan() }
+                }
+                .fixedSize()
+                .help("Use an area of Apple Maps (the scale is set for you), or a picture or PDF of the building")
                 Button(scaling ? "Cancel Scale" : "Set Scale") {
                     scaling.toggle(); scalePoints = []
                 }
@@ -381,7 +390,7 @@ struct HeatmapView: View {
             }
             .overlay(alignment: .center) {
                 if s.spots.isEmpty && labels {
-                    Text("No floor plan yet: use Floor Plan… or just measure on the grid.")
+                    Text("No floor plan yet: use Floor Plan (Apple Maps, or a picture or PDF), or just measure on the grid.")
                         .foregroundStyle(.secondary).padding(8)
                         .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                 }
@@ -655,7 +664,7 @@ struct HeatmapView: View {
         if s.planFile == nil || s.scale == nil {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Before you start").font(.callout.weight(.semibold))
-                if s.planFile == nil { Text("Floor Plan… loads a picture or PDF of the building.").font(.caption) }
+                if s.planFile == nil { Text("Floor Plan › From Apple Maps… uses an area of the map (scale set for you), or load a picture or PDF of the building.").font(.caption) }
                 if s.scale == nil { Text("Set Scale: click both ends of a wall and type its length. Then sizes and distances are in feet.").font(.caption) }
             }
             .foregroundStyle(.secondary)
@@ -887,6 +896,26 @@ struct HeatmapView: View {
     @ViewBuilder private func pick(_ s: HeatSurvey) -> some View {
         Button { currentID = s.id.uuidString; selected = nil } label: {
             if s.id == survey?.id { Label(s.name, systemImage: "checkmark") } else { Text(s.name) }
+        }
+    }
+
+    /// The Apple Maps picture becomes the plan, and its scale is set from the map: no Set Scale needed.
+    private func useMapPlan(_ image: NSImage, metresWide: Double, metres: Bool) {
+        guard let s = survey, metresWide > 0 else { return }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("arpradar-map-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { errorText = "Couldn’t use the map picture."; return }
+        do {
+            try png.write(to: url)
+            try store.setPlan(s.id, from: url)
+            store.update(s.id) { sv in
+                sv.scale = HeatScale(pixelsPerUnit: Heatmap.pixelsPerUnit(planWidth: sv.planWidth, metresWide: metresWide, metres: metres),
+                                     metres: metres)
+            }
+            zoom = 1; scaling = false; scalePoints = []
+        } catch {
+            errorText = error.localizedDescription
         }
     }
 
