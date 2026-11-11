@@ -171,3 +171,28 @@ final class HeatmapSaveTests: XCTestCase {
         XCTAssertEqual(d.heatmapID, s.id)
     }
 }
+
+/// Heatmap zoom: the plan fits at 1, grows inside a scrolling area beyond that, and stays centred when smaller.
+final class HeatmapZoomTests: XCTestCase {
+    func testLayoutAtDifferentZooms() {
+        let plan = CGSize(width: 1600, height: 1000), window = CGSize(width: 800, height: 800)
+        let fit = HeatmapView.layout(plan: plan, viewport: window, zoom: 1)
+        XCTAssertEqual(fit.k, 0.5, accuracy: 0.0001)                    // 1600 wide into 800
+        XCTAssertEqual(fit.size, window)                                  // no scrolling at Fit
+        XCTAssertEqual(fit.origin.x, 0, accuracy: 0.0001)
+        XCTAssertEqual(fit.origin.y, 150, accuracy: 0.0001)              // centred top to bottom
+        let z4 = HeatmapView.layout(plan: plan, viewport: window, zoom: 4)
+        XCTAssertEqual(z4.k, 2, accuracy: 0.0001)
+        XCTAssertEqual(z4.size.width, 3200, accuracy: 0.0001)            // scrolls both ways
+        XCTAssertEqual(z4.size.height, 2000, accuracy: 0.0001)
+        XCTAssertEqual(z4.origin, .zero)
+        // A plan spot maps to the same place whichever zoom it was clicked at.
+        let spot = CGPoint(x: 400, y: 300)
+        for z in [1.0, 2.5, 8.0] {
+            let L = HeatmapView.layout(plan: plan, viewport: window, zoom: z)
+            let screen = CGPoint(x: L.origin.x + spot.x * L.k, y: L.origin.y + spot.y * L.k)
+            XCTAssertEqual((screen.x - L.origin.x) / L.k, spot.x, accuracy: 0.0001)
+            XCTAssertEqual((screen.y - L.origin.y) / L.k, spot.y, accuracy: 0.0001)
+        }
+    }
+}

@@ -2,6 +2,42 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+/// Finds the plan's scroll view (for zooming around a point) and turns mouse-wheel turns over it into zoom steps.
+/// A trackpad's two-finger scroll still pans; with ⌘ or ⌥ held, any scroll zooms.
+struct PlanScrollFinder: NSViewRepresentable {
+    let scroller: MapScroller
+    let onZoom: (Double) -> Void
+
+    final class Probe: NSView {
+        var scroller: MapScroller?
+        var onZoom: (Double) -> Void = { _ in }
+        private var monitor: Any?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+            guard window != nil else { return }
+            DispatchQueue.main.async { [weak self] in if let sv = self?.enclosingScrollView { self?.scroller?.scrollView = sv } }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] e in
+                guard let self, let sv = self.enclosingScrollView, e.window === sv.window,
+                      sv.bounds.contains(sv.convert(e.locationInWindow, from: nil)) else { return e }
+                let zoomKey = !e.modifierFlags.intersection([.command, .option]).isEmpty
+                guard !e.hasPreciseScrollingDeltas || zoomKey else { return e }      // trackpad scroll: pan
+                let dy = e.hasPreciseScrollingDeltas ? e.scrollingDeltaY / 10 : e.scrollingDeltaY
+                guard dy != 0 else { return nil }
+                self.onZoom(max(-3, min(3, dy)))
+                return nil
+            }
+        }
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
+
+    func makeNSView(context: Context) -> Probe { let p = Probe(); p.scroller = scroller; p.onZoom = onZoom; return p }
+    func updateNSView(_ p: Probe, context: Context) {
+        p.scroller = scroller; p.onZoom = onZoom
+        DispatchQueue.main.async { if let sv = p.enclosingScrollView { scroller.scrollView = sv } }
+    }
+}
+
 /// Opening a particular heatmap from elsewhere (an organization's saved entry).
 enum HeatmapWindow {
     @MainActor static func show(_ id: UUID, linking entry: UUID? = nil) {
@@ -41,6 +77,16 @@ struct HeatmapView: View {
     @State private var heat: HeatResult? = nil
     @State private var dragging: (id: UUID, to: CGPoint)? = nil
 
+    // Zoom: 1 = the whole plan fits the window; up to 8 times that.
+    @State private var zoom = 1.0
+    static let maxZoom = 8.0
+    @State private var planScroller = MapScroller()
+    @State private var viewport: CGSize = .zero
+    /// While pinching the plan is only magnified (smooth); it's redrawn at the new zoom when the fingers lift.
+    @State private var pinch: (zoom: Double, point: CGPoint, inView: CGPoint)? = nil
+    @State private var liveMag: CGFloat = 1
+    @State private var liveAnchor: UnitPoint = .center
+
     enum NameAsk: Identifiable { case new, rename, copy, ap(String); var id: String { "\(self)" } }
 
     private var survey: HeatSurvey? { store.survey(UUID(uuidString: currentID)) ?? store.surveys.first }
@@ -68,6 +114,7 @@ struct HeatmapView: View {
         }
         .frame(minWidth: 900, minHeight: 600)
         .task(id: heatKey) { await recompute() }
+        .onChange(of: currentID) { zoom = 1 }
         .sheet(isPresented: $askLength) { scaleSheet }
         .alert(nameTitle, isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
             TextField("Name", text: $nameText)
@@ -161,17 +208,55 @@ struct HeatmapView: View {
 
     // MARK: Plan
 
-    private func fit(_ s: HeatSurvey, in size: CGSize) -> (origin: CGPoint, k: Double) {
-        let k = min(size.width / s.planWidth, size.height / s.planHeight)
-        return (CGPoint(x: (size.width - s.planWidth * k) / 2, y: (size.height - s.planHeight * k) / 2), k)
+    /// Where the plan sits at a zoom: its scale (screen points per plan pixel), its corner, and the scrolling area's size
+    /// (at least the window, so a small plan stays centred and clicks anywhere land).
+    nonisolated static func layout(plan: CGSize, viewport: CGSize, zoom: Double) -> (origin: CGPoint, k: Double, size: CGSize) {
+        guard plan.width > 0, plan.height > 0, viewport.width > 0, viewport.height > 0 else { return (.zero, 1, viewport) }
+        let k = min(viewport.width / plan.width, viewport.height / plan.height) * zoom
+        let w = plan.width * k, h = plan.height * k
+        let size = CGSize(width: max(viewport.width, w), height: max(viewport.height, h))
+        return (CGPoint(x: (size.width - w) / 2, y: (size.height - h) / 2), k, size)
+    }
+
+    private func layout(_ s: HeatSurvey, zoom z: Double) -> (origin: CGPoint, k: Double, size: CGSize) {
+        Self.layout(plan: CGSize(width: s.planWidth, height: s.planHeight), viewport: viewport, zoom: z)
+    }
+
+    /// Zooms keeping `point` (scrolling-area coordinates at the current zoom) at `inView` in the window.
+    private func zoom(to wanted: Double, _ s: HeatSurvey, point: CGPoint, inView: CGPoint) {
+        let z = min(Self.maxZoom, max(1, wanted))
+        guard abs(z - zoom) > 0.001 else { liveMag = 1; return }
+        let a = layout(s, zoom: zoom), b = layout(s, zoom: z)
+        let plan = CGPoint(x: (point.x - a.origin.x) / a.k, y: (point.y - a.origin.y) / a.k)
+        let moved = CGPoint(x: b.origin.x + plan.x * b.k, y: b.origin.y + plan.y * b.k)
+        planScroller.settle(at: CGPoint(x: moved.x - inView.x, y: moved.y - inView.y))
+        zoom = z
+    }
+
+    /// The slider and buttons keep the middle of the window in place.
+    private func zoomCentered(_ wanted: Double, _ s: HeatSurvey) {
+        let o = planScroller.origin, v = planScroller.visible
+        let mid = CGPoint(x: v.width / 2, y: v.height / 2)
+        zoom(to: wanted, s, point: CGPoint(x: o.x + mid.x, y: o.y + mid.y), inView: mid)
+    }
+
+    /// A mouse wheel notch (or ⌘/⌥ + scroll) zooms around the pointer.
+    private func wheelZoom(_ steps: Double, _ s: HeatSurvey) {
+        guard pinch == nil else { return }
+        let at = planScroller.pointerInMap ?? CGPoint(x: planScroller.origin.x + planScroller.visible.width / 2,
+                                                     y: planScroller.origin.y + planScroller.visible.height / 2)
+        let o = planScroller.origin
+        zoom(to: zoom * pow(1.15, steps), s, point: at, inView: CGPoint(x: at.x - o.x, y: at.y - o.y))
     }
 
     private func planArea(_ s: HeatSurvey) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             banner(s)
             GeometryReader { geo in
-                let f = fit(s, in: geo.size)
+                let L = Self.layout(plan: CGSize(width: s.planWidth, height: s.planHeight), viewport: geo.size, zoom: zoom)
+                let f = (origin: L.origin, k: L.k)
                 let view = { (x: Double, y: Double) in CGPoint(x: f.origin.x + x * f.k, y: f.origin.y + y * f.k) }
+                ScrollView([.horizontal, .vertical]) {
                 ZStack(alignment: .topLeading) {
                     Color.clear
                     planPicture(s)
@@ -232,6 +317,7 @@ struct HeatmapView: View {
                             .position(view(b.x, b.y))
                     }
                 }
+                .frame(width: L.size.width, height: L.size.height, alignment: .topLeading)
                 .contentShape(Rectangle())
                 .onTapGesture(coordinateSpace: .local) { p in
                     let plan = CGPoint(x: (p.x - f.origin.x) / f.k, y: (p.y - f.origin.y) / f.k)
@@ -239,6 +325,32 @@ struct HeatmapView: View {
                     tapped(plan, s)
                 }
                 .coordinateSpace(name: "plan")
+                .scaleEffect(liveMag, anchor: liveAnchor)
+                .background(PlanScrollFinder(scroller: planScroller) { steps in wheelZoom(steps, s) })
+                .simultaneousGesture(MagnifyGesture()
+                    .onChanged { v in
+                        if pinch == nil {
+                            let at = planScroller.pointerInMap ?? v.startLocation
+                            let o = planScroller.origin
+                            pinch = (zoom, at, CGPoint(x: at.x - o.x, y: at.y - o.y))
+                            liveAnchor = UnitPoint(x: at.x / max(1, L.size.width), y: at.y / max(1, L.size.height))
+                        }
+                        guard let p = pinch else { return }
+                        liveMag = min(Self.maxZoom, max(1, p.zoom * v.magnification)) / p.zoom
+                    }
+                    .onEnded { _ in
+                        guard let p = pinch else { return }
+                        let z = p.zoom * liveMag
+                        pinch = nil
+                        let o = planScroller.origin
+                        let inView = CGPoint(x: p.point.x - o.x, y: p.point.y - o.y)
+                        var t = Transaction(); t.disablesAnimations = true
+                        withTransaction(t) { liveMag = 1; zoom(to: z, s, point: p.point, inView: inView) }
+                    })
+                }
+                .scrollIndicators(zoom > 1.001 ? .visible : .hidden)
+                .onAppear { viewport = geo.size }
+                .onChange(of: geo.size) { _, size in viewport = size }
             }
             .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -401,6 +513,25 @@ struct HeatmapView: View {
             Text("\(s.spots.count) spots measured").font(.caption).foregroundStyle(.secondary)
             if tab == .walk { Text("Drag a spot to move it · right-click to delete").font(.caption).foregroundStyle(.secondary) }
             Spacer()
+            zoomBar(s)
+        }
+    }
+
+    /// Zoom out, a slider, zoom in, the size, and Fit.
+    private func zoomBar(_ s: HeatSurvey) -> some View {
+        HStack(spacing: 6) {
+            Button { zoomCentered(zoom / 1.25, s) } label: { Image(systemName: "minus.magnifyingglass") }
+                .buttonStyle(.borderless).disabled(zoom <= 1.001).accessibilityLabel("Zoom out")
+            Slider(value: Binding(get: { log2(zoom) }, set: { zoomCentered(pow(2, $0), s) }), in: 0...log2(Self.maxZoom))
+                .frame(width: 130).controlSize(.small)
+                .help("Zoom (or pinch on the trackpad, or turn the mouse wheel)")
+                .accessibilityLabel("Zoom")
+            Button { zoomCentered(zoom * 1.25, s) } label: { Image(systemName: "plus.magnifyingglass") }
+                .buttonStyle(.borderless).disabled(zoom >= Self.maxZoom - 0.001).accessibilityLabel("Zoom in")
+            Text("\(Int((zoom * 100).rounded()))%").font(.caption).monospacedDigit().foregroundStyle(.secondary).frame(width: 40, alignment: .trailing)
+            Button("Fit") { zoom = 1; DispatchQueue.main.async { planScroller.scroll(to: .zero) } }
+                .controlSize(.small).disabled(zoom <= 1.001)
+                .help("Show the whole plan")
         }
     }
 
