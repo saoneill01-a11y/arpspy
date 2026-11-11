@@ -399,24 +399,35 @@ enum Heatmap {
         return best.values.sorted { $0.band < $1.band }
     }
 
-    /// Two of your access points on the same (or an overlapping) channel in one band.
+    /// Two of your access points on the same (or an overlapping) channel in one band, both strong in the same places.
     struct ChannelClash: Hashable, Sendable {
         var a: String, b: String
         var band: String
         var channelA: Int, channelB: Int
+        /// Measured spots where both were at least `strong` dBm.
+        var spots: Int = 0
         /// "ch 36" or "ch 36 and 40"
         var label: String { channelA == channelB ? "ch \(channelA)" : "ch \(channelA) and \(channelB)" }
     }
 
-    /// Every pair of access points that share a channel on some band. Each pair hears the other's traffic as noise and
-    /// they take turns talking, so where both reach, both are slower.
-    static func channelClashes(_ aps: [HeatAP]) -> [ChannelClash] {
+    /// Pairs of access points that share a channel on a band and were both strong (−70 dBm or better) at one or more
+    /// of the same spots. There they take turns talking, so both are slower. Two APs on the same channel at opposite
+    /// ends of a building don't count: neither hears the other much.
+    static func channelClashes(_ aps: [HeatAP], spots: [HeatSpot], strong: Int = -70) -> [ChannelClash] {
         var out: [ChannelClash] = []
+        func loudest(_ ap: HeatAP, _ band: String, at s: HeatSpot) -> Int? {
+            let radios = Set(ap.radioList.isEmpty ? [ap.bssid.uppercased()] : ap.radioList)
+            return s.readings.filter { $0.band == band && radios.contains($0.bssid.uppercased()) }.map(\.rssi).max()
+        }
         for (i, x) in aps.enumerated() {
             for y in aps.dropFirst(i + 1) {
                 for rx in x.bandReadings {
                     for ry in y.bandReadings where overlaps(rx, ry) {
-                        out.append(ChannelClash(a: x.key, b: y.key, band: rx.band, channelA: rx.channel, channelB: ry.channel))
+                        let together = spots.filter { s in
+                            (loudest(x, rx.band, at: s) ?? -200) >= strong && (loudest(y, ry.band, at: s) ?? -200) >= strong
+                        }.count
+                        guard together > 0 else { continue }
+                        out.append(ChannelClash(a: x.key, b: y.key, band: rx.band, channelA: rx.channel, channelB: ry.channel, spots: together))
                     }
                 }
             }

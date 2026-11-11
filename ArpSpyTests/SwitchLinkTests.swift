@@ -389,13 +389,24 @@ final class OverlayAndClashTests: XCTestCase {
     func testSameChannelClashes() {
         func ap(_ key: String, _ band: String, _ ch: Int, _ width: Int = 20) -> HeatAP {
             HeatAP(key: key, bssid: key, ssid: "N", channel: ch, band: band, widthMHz: width, best: -50, spotsHeard: 5, x: 0, y: 0,
-                   bandReadings: [HeatReading(ssid: "N", bssid: key, rssi: -50, channel: ch, band: band, widthMHz: width)])
+                   radioList: [key], bandReadings: [HeatReading(ssid: "N", bssid: key, rssi: -50, channel: ch, band: band, widthMHz: width)])
         }
-        let cs = Heatmap.channelClashes([ap("A", "5 GHz", 36, 80), ap("B", "5 GHz", 44, 80), ap("C", "5 GHz", 149, 80), ap("D", "2.4 GHz", 6)])
-        XCTAssertEqual(cs.count, 1)                                     // 36 and 44 at 80 MHz overlap; 149 doesn't; 2.4 GHz is another band
+        func r(_ key: String, _ rssi: Int, _ band: String = "5 GHz", _ ch: Int = 36, _ w: Int = 80) -> HeatReading {
+            HeatReading(ssid: "N", bssid: key, rssi: rssi, channel: ch, band: band, widthMHz: w)
+        }
+        let aps = [ap("A", "5 GHz", 36, 80), ap("B", "5 GHz", 44, 80), ap("C", "5 GHz", 149, 80), ap("E", "5 GHz", 36, 80)]
+        // A and B are both strong at two spots. E shares A's channel but is never strong where A is.
+        let spots = [HeatSpot(x: 0, y: 0, readings: [r("A", -55), r("B", -65, "5 GHz", 44), r("E", -85)]),
+                     HeatSpot(x: 1, y: 0, readings: [r("A", -60), r("B", -68, "5 GHz", 44), r("C", -40, "5 GHz", 149)]),
+                     HeatSpot(x: 2, y: 0, readings: [r("A", -80), r("E", -50)])]
+        let cs = Heatmap.channelClashes(aps, spots: spots)
+        XCTAssertEqual(cs.count, 1)                                     // A+B only; C is on another channel; A+E never strong together
         XCTAssertEqual(Set([cs[0].a, cs[0].b]), ["A", "B"])
         XCTAssertEqual(cs[0].label, "ch 36 and 44")
-        XCTAssertTrue(Heatmap.channelClashes([ap("A", "2.4 GHz", 1), ap("B", "2.4 GHz", 11)]).isEmpty)
-        XCTAssertEqual(Heatmap.channelClashes([ap("A", "2.4 GHz", 6), ap("B", "2.4 GHz", 6)]).first?.label, "ch 6")
+        XCTAssertEqual(cs[0].spots, 2)
+        // A gentler limit counts A and E too (both above −90 at the first spot).
+        XCTAssertEqual(Heatmap.channelClashes(aps, spots: spots, strong: -90).count, 3)
+        let two = [ap("A", "2.4 GHz", 1), ap("B", "2.4 GHz", 11)]
+        XCTAssertTrue(Heatmap.channelClashes(two, spots: [HeatSpot(x: 0, y: 0, readings: [r("A", -40, "2.4 GHz", 1, 20), r("B", -40, "2.4 GHz", 11, 20)])]).isEmpty)
     }
 }

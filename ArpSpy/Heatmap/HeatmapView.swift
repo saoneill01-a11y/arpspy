@@ -72,6 +72,8 @@ struct HeatmapView: View {
     @State private var infoAP: String? = nil
     /// Highlight › Same channel: rings access points that share a channel, with a line between each pair.
     @AppStorage("heatmap.highlightChannels") private var highlightChannels = false
+    /// The band Same channel looks at: "2.4 GHz", "5 GHz" or "6 GHz".
+    @AppStorage("heatmap.clashBand") private var clashBand = "5 GHz"
     /// How solid the floor plan is drawn over the heat colours on the Map tab (0 = colours only).
     @AppStorage("heatmap.planOpacity") private var planOpacity = 1.0
     @State private var draggingAP: (key: String, to: CGPoint)? = nil
@@ -328,17 +330,18 @@ struct HeatmapView: View {
                         .stroke(Color.accentColor.opacity(0.5), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
                         .allowsHitTesting(false)
                     }
-                    if tab == .map, highlightChannels, s.shownNetwork != nil {
+                    if tab == .map, highlightChannels, s.shownNetwork != nil, let focus = hoveredAP ?? infoAP {
+                        // Lines only from the access point you're pointing at (or looking at), to the ones it clashes with.
                         let shown = Dictionary(uniqueKeysWithValues: (heat?.aps ?? []).filter(\.worthShowing).map { ($0.key, $0) })
-                        ForEach(Array(clashes.enumerated()), id: \.offset) { _, c in
+                        ForEach(Array(clashes.filter { $0.a == focus || $0.b == focus }.enumerated()), id: \.offset) { _, c in
                             if let a = shown[c.a], let b = shown[c.b] {
                                 let pa = view(a.x, a.y), pb = view(b.x, b.y)
                                 Path { p in p.move(to: pa); p.addLine(to: pb) }
-                                    .stroke(Self.clashColor(c.band), style: StrokeStyle(lineWidth: 3, dash: [8, 5]))
+                                    .stroke(Color.red, style: StrokeStyle(lineWidth: 3, dash: [8, 5]))
                                     .allowsHitTesting(false)
-                                Text("\(c.label) · \(c.band)").font(.caption2.weight(.bold)).foregroundStyle(.white)
+                                Text("\(c.label) · strong together at \(c.spots) spot\(c.spots == 1 ? "" : "s")").font(.caption2.weight(.bold)).foregroundStyle(.white)
                                     .padding(.horizontal, 5).padding(.vertical, 2)
-                                    .background(Capsule().fill(Self.clashColor(c.band)))
+                                    .background(Capsule().fill(Color.red))
                                     .position(x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2)
                                     .allowsHitTesting(false)
                             }
@@ -476,11 +479,11 @@ struct HeatmapView: View {
         .help(spotHelp(spot, s))
     }
 
-    private var clashes: [Heatmap.ChannelClash] { Heatmap.channelClashes((heat?.aps ?? []).filter(\.worthShowing)) }
-
-    static func clashColor(_ band: String) -> Color {
-        band.hasPrefix("2") ? Color(red: 0.85, green: 0.25, blue: 0.2) : band.hasPrefix("6") ? Color.purple : Color(red: 0.9, green: 0.45, blue: 0.0)
+    /// Same channel pairs on the chosen band (all bands for the details card).
+    private var allClashes: [Heatmap.ChannelClash] {
+        Heatmap.channelClashes((heat?.aps ?? []).filter(\.worthShowing), spots: survey?.spots ?? [])
     }
+    private var clashes: [Heatmap.ChannelClash] { allClashes.filter { $0.band == clashBand } }
 
     @ViewBuilder private func infoCard(_ s: HeatSurvey) -> some View {
         let spot = infoSpot.flatMap { id in s.spots.first { $0.id == id } }
@@ -547,7 +550,7 @@ struct HeatmapView: View {
 
     /// The pop-up for an access point: its radios, how loud it was, where it was heard, and what to do with it.
     private func apInfo(_ ap: HeatAP, _ s: HeatSurvey) -> some View {
-        let clash = clashes.filter { $0.a == ap.key || $0.b == ap.key }
+        let clash = allClashes.filter { $0.a == ap.key || $0.b == ap.key }
         return VStack(alignment: .leading, spacing: 8) {
             Text(s.apName(ap.bssid, ssid: ap.ssid)).font(.headline)
             Text(ap.placed ? "Placed by you" : "Position estimated from where it was loudest (drag it to place it)")
@@ -567,8 +570,8 @@ struct HeatmapView: View {
             ForEach(Array(clash.enumerated()), id: \.offset) { _, c in
                 let other = c.a == ap.key ? c.b : c.a
                 let name = (heat?.aps ?? []).first { $0.key == other }.map { s.apName($0.bssid, ssid: $0.ssid) } ?? other
-                Label("Shares \(c.label) (\(c.band)) with \(name)", systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundStyle(Self.clashColor(c.band))
+                Label("Shares \(c.label) (\(c.band)) with \(name), both strong at \(c.spots) spot\(c.spots == 1 ? "" : "s")", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout).foregroundStyle(.red)
             }
             Text(ap.radioList.joined(separator: "  ")).font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -621,11 +624,20 @@ struct HeatmapView: View {
             }
         }
         .overlay {
-            if highlightChannels, let c = clashes.first(where: { $0.a == ap.key || $0.b == ap.key }) {
-                Circle().stroke(Self.clashColor(c.band), lineWidth: 3).frame(width: 34, height: 34)
+            if highlightChannels, clashes.contains(where: { $0.a == ap.key || $0.b == ap.key }) {
+                Circle().stroke(Color.red, lineWidth: 3).frame(width: 34, height: 34)
             }
         }
-        .opacity(ap.placed || selected || showName || (highlightChannels && clashes.contains { $0.a == ap.key || $0.b == ap.key }) ? 1 : 0.6)
+        .overlay(alignment: .bottom) {
+            if highlightChannels, !showName, let r = ap.bandReadings.first(where: { $0.band == clashBand }) {
+                let bad = clashes.contains { $0.a == ap.key || $0.b == ap.key }
+                Text("ch \(r.channel)").font(.caption2.weight(.bold)).foregroundStyle(.white).fixedSize()
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(bad ? Color.red : Color(red: 0.1, green: 0.55, blue: 0.25)))
+                    .offset(y: 18)
+            }
+        }
+        .opacity(ap.placed || selected || showName || highlightChannels ? 1 : 0.6)
         .overlay(alignment: .top) {
             if showName {
                 Text(name + (ap.placed ? "" : " (estimated)"))
@@ -953,22 +965,27 @@ struct HeatmapView: View {
         VStack(alignment: .leading, spacing: 6) {
             section("Highlight")
             Toggle("Same channel", isOn: $highlightChannels).toggleStyle(.checkbox)
-                .help("Rings your access points that share a channel and draws a line between each pair")
+                .help("Tags each access point with its channel on one band: red when it shares that channel with another AP where both are strong, green when it's clear. Point at an AP to see who it clashes with.")
             if highlightChannels {
+                Picker("", selection: $clashBand) {
+                    Text("2.4 GHz").tag("2.4 GHz"); Text("5 GHz").tag("5 GHz"); Text("6 GHz").tag("6 GHz")
+                }
+                .pickerStyle(.segmented).labelsHidden()
                 let cs = clashes
                 if cs.isEmpty {
-                    Text("None of your access points share a channel.").font(.caption).foregroundStyle(.secondary)
+                    Text("No clashes on \(clashBand): no two of your access points on one channel are both strong (−70 dBm or better) in the same place.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 } else {
                     ForEach(Array(cs.enumerated()), id: \.offset) { _, c in
                         let aps = heat?.aps ?? []
                         let na = aps.first { $0.key == c.a }.map { s.apName($0.bssid, ssid: $0.ssid) } ?? c.a
                         let nb = aps.first { $0.key == c.b }.map { s.apName($0.bssid, ssid: $0.ssid) } ?? c.b
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Circle().fill(Self.clashColor(c.band)).frame(width: 8, height: 8)
-                            Text("\(na) and \(nb): \(c.label), \(c.band)").font(.caption).fixedSize(horizontal: false, vertical: true)
+                            Circle().fill(Color.red).frame(width: 8, height: 8)
+                            Text("\(na) and \(nb): \(c.label), strong together at \(c.spots) spot\(c.spots == 1 ? "" : "s")").font(.caption).fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    Text("Access points on the same channel take turns, so both slow down where both reach. Give each a different channel, or lower their power.")
+                    Text("Where both are strong they take turns talking, so both slow down. Point at an access point to see its clashes. Give one a different channel, or lower their power.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
