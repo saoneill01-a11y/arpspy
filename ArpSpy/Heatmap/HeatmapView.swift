@@ -60,7 +60,10 @@ struct HeatmapView: View {
     @State private var tab: Tab = .walk
     @State private var mode: HeatMode = .signal
     @State private var band: HeatBand = .all
+    /// The access point shown alone (an `apKey`), and the one the pointer is over.
     @State private var apBSSID: String? = nil
+    @State private var hoveredAP: String? = nil
+    @State private var draggingAP: (key: String, to: CGPoint)? = nil
     @State private var selected: UUID? = nil
 
     @State private var scaling = false
@@ -282,10 +285,15 @@ struct HeatmapView: View {
                         .allowsHitTesting(false)
                     }
                     if tab == .map, s.shownNetwork != nil {
-                        ForEach(heat?.aps ?? []) { ap in
-                            apMarker(s.apName(ap.bssid, ssid: ap.ssid), highlighted: ap.bssid == apBSSID && mode == .oneAP)
-                                .position(view(ap.x, ap.y))
-                                .allowsHitTesting(false)
+                        // One marker per access point. Guesses are faded with a "?"; drag one to where the AP really is.
+                        ForEach((heat?.aps ?? []).filter(\.worthShowing)) { ap in
+                            let on = (ap.key == apBSSID && mode == .oneAP) || hoveredAP == ap.key || draggingAP?.key == ap.key
+                            apMarker(ap, name: s.apName(ap.bssid, ssid: ap.ssid), showName: on)
+                                .position(draggingAP?.key == ap.key ? draggingAP!.to : view(ap.x, ap.y))
+                                .onHover { inside in hoveredAP = inside ? ap.key : (hoveredAP == ap.key ? nil : hoveredAP) }
+                                .gesture(apDragGesture(ap, s, f))
+                                .onTapGesture { mode = .oneAP; apBSSID = ap.key }
+                                .contextMenu { apMenu(ap, s) }
                         }
                     }
                     ForEach(s.spots) { spot in
@@ -395,8 +403,10 @@ struct HeatmapView: View {
                 Circle().fill(spotColor(spot)).frame(width: 14, height: 14)
                     .overlay(Circle().stroke(isSel ? Color.accentColor : .white, lineWidth: isSel ? 3 : 2))
             } else {
-                Circle().fill(Color.primary.opacity(0.85)).frame(width: isSel ? 10 : 7, height: isSel ? 10 : 7)
-                    .overlay(Circle().stroke(isSel ? Color.accentColor : .clear, lineWidth: 2))
+                // Where you measured, coloured by what was measured there, with a white ring so it reads on the map.
+                Circle().fill(spotColor(spot)).frame(width: isSel ? 14 : 11, height: isSel ? 14 : 11)
+                    .overlay(Circle().stroke(isSel ? Color.accentColor : .white, lineWidth: isSel ? 3 : 2))
+                    .shadow(color: .black.opacity(0.35), radius: 1)
             }
         }
         .frame(width: 24, height: 24)
@@ -423,17 +433,59 @@ struct HeatmapView: View {
             }
     }
 
-    private func apMarker(_ name: String, highlighted: Bool) -> some View {
-        VStack(spacing: 2) {
-            Text("AP").font(.caption2.weight(.bold))
-                .padding(.horizontal, 7).padding(.vertical, 2)
-                .background(Capsule().fill(highlighted ? Color.accentColor : Color(nsColor: .textBackgroundColor)))
-                .foregroundStyle(highlighted ? Color.white : Color.primary)
-                .overlay(Capsule().stroke(Color.primary, lineWidth: 1.2))
-            Text(name).font(.caption2.weight(.semibold))
-                .padding(.horizontal, 4)
-                .background(RoundedRectangle(cornerRadius: 3).fill(Color(nsColor: .textBackgroundColor).opacity(0.8)))
+    /// A small access point icon: solid where you placed it, faded with a "?" where ARPradar guessed. The name shows
+    /// on hover, while dragging, or when it's the one shown alone.
+    private func apMarker(_ ap: HeatAP, name: String, showName: Bool) -> some View {
+        let selected = ap.key == apBSSID && mode == .oneAP
+        return ZStack {
+            Circle().fill(selected ? Color.accentColor : Color(nsColor: .textBackgroundColor))
+                .frame(width: 24, height: 24)
+                .overlay(Circle().stroke(Color.primary.opacity(ap.placed ? 0.9 : 0.6),
+                                         style: StrokeStyle(lineWidth: 1.5, dash: ap.placed ? [] : [3, 2])))
+            Image(systemName: "wifi").font(.system(size: 11, weight: .bold))
+                .foregroundStyle(selected ? Color.white : Color.primary)
+            if !ap.placed {
+                Text("?").font(.system(size: 9, weight: .heavy)).foregroundStyle(.white)
+                    .frame(width: 12, height: 12).background(Circle().fill(Color.secondary))
+                    .offset(x: 10, y: -10)
+            }
         }
+        .opacity(ap.placed || selected || showName ? 1 : 0.6)
+        .overlay(alignment: .top) {
+            if showName {
+                Text(name + (ap.placed ? "" : " (estimated)"))
+                    .font(.caption.weight(.semibold)).fixedSize()
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color(nsColor: .textBackgroundColor)))
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.primary.opacity(0.4)))
+                    .offset(y: 28)
+            }
+        }
+        .frame(width: 28, height: 28)
+        .contentShape(Circle())
+        .help(ap.placed ? "\(name): placed by you. Drag to move; right-click for more."
+                        : "\(name): estimated from where it was loudest. Drag it to where the access point really is.")
+        .zIndex(showName ? 1 : 0)
+    }
+
+    private func apDragGesture(_ ap: HeatAP, _ s: HeatSurvey, _ f: (origin: CGPoint, k: Double)) -> some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .named("plan"))
+            .onChanged { v in draggingAP = (ap.key, v.location) }
+            .onEnded { v in
+                let x = min(max((v.location.x - f.origin.x) / f.k, 0), s.planWidth)
+                let y = min(max((v.location.y - f.origin.y) / f.k, 0), s.planHeight)
+                store.update(s.id) { $0.apPlaces[ap.key] = HeatPlace(x: x, y: y) }
+                draggingAP = nil
+            }
+    }
+
+    @ViewBuilder private func apMenu(_ ap: HeatAP, _ s: HeatSurvey) -> some View {
+        Button("Show Only This Access Point") { mode = .oneAP; apBSSID = ap.key }
+        Button("Name This Access Point…") { nameText = s.apNames[ap.key] ?? ""; naming = .ap(ap.key) }
+        if ap.placed {
+            Button("Use Estimated Position") { store.update(s.id) { $0.apPlaces[ap.key] = nil } }
+        }
+        Button("Copy BSSID") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(ap.bssid, forType: .string) }
     }
 
     private func weakLabel(_ spot: HeatSpot) -> some View {
@@ -672,8 +724,8 @@ struct HeatmapView: View {
                 Text("All networks").tag("")
             }
             if mode == .oneAP {
-                Picker("Access point", selection: Binding(get: { apBSSID ?? aps.first?.bssid ?? "" }, set: { apBSSID = $0 })) {
-                    ForEach(aps) { Text(s.apName($0.bssid, ssid: $0.ssid)).tag($0.bssid) }
+                Picker("Access point", selection: Binding(get: { apBSSID ?? aps.first?.key ?? "" }, set: { apBSSID = $0 })) {
+                    ForEach(aps) { Text(s.apName($0.bssid, ssid: $0.ssid)).tag($0.key) }
                 }
             }
             Picker("Band", selection: $band) { ForEach(HeatBand.allCases) { Text($0.rawValue).tag($0) } }
@@ -703,25 +755,26 @@ struct HeatmapView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(aps.prefix(10).enumerated()), id: \.element.id) { i, ap in
                         Button {
-                            mode = .oneAP; apBSSID = ap.bssid
+                            mode = .oneAP; apBSSID = ap.key
                         } label: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(s.apName(ap.bssid, ssid: ap.ssid)).fontWeight(.medium)
-                                    Text("ch \(ap.channel) · \(ap.band) · \(ap.widthMHz) MHz").font(.caption).foregroundStyle(.secondary)
+                                    Text((ap.bands.count > 1 ? ap.bands.joined(separator: " + ") : "ch \(ap.channel) · \(ap.band) · \(ap.widthMHz) MHz")
+                                         + (ap.placed ? " · placed" : ""))
+                                        .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 Text(dBm(ap.best)).monospacedDigit().fontWeight(.semibold).foregroundStyle(signalColor(ap.best))
                             }
                             .padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(mode == .oneAP && apBSSID == ap.bssid ? Color.accentColor.opacity(0.12) : .clear)
+                            .background(mode == .oneAP && apBSSID == ap.key ? Color.accentColor.opacity(0.12)
+                                        : hoveredAP == ap.key ? Color.primary.opacity(0.06) : .clear)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .contextMenu {
-                            Button("Name This Access Point…") { nameText = s.apNames[ap.bssid] ?? ""; naming = .ap(ap.bssid) }
-                            Button("Copy BSSID") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(ap.bssid, forType: .string) }
-                        }
+                        .onHover { inside in hoveredAP = inside ? ap.key : (hoveredAP == ap.key ? nil : hoveredAP) }
+                        .contextMenu { apMenu(ap, s) }
                         if i < min(aps.count, 10) - 1 { Divider() }
                     }
                     let neighbors = Heatmap.neighborCount(s.spots, filter: filter)
@@ -781,10 +834,23 @@ struct HeatmapView: View {
             // Findings are about the whole network; the Coverage box follows the map (one AP alone when that's shown).
             let best = mode == .signal ? g : Heatmap.grid(s, mode: .signal, filter: filter)
             let shown = Heatmap.coverage(mode.isSignal ? g : best)
-            return (g, shown, Heatmap.accessPoints(s.spots, filter: HeatFilter(ssid: filter.ssid, band: filter.band)),
+            return (g, shown, Heatmap.accessPoints(s.spots, filter: HeatFilter(ssid: filter.ssid, band: filter.band), placed: s.apPlaces),
                     Heatmap.findings(s, filter: filter, coverage: Heatmap.coverage(best)))
         }
         heat = HeatResult(image: HeatImage.make(parts.0, mode: mode), coverage: parts.1, aps: parts.2, findings: parts.3)
+        nameFromUniFi(s, aps: parts.2)
+    }
+
+    /// Access points the UniFi map knows (from the last scan with a controller) get their UniFi names, kept with the
+    /// heatmap so they stay when there's no controller. Names you gave aren't touched.
+    private func nameFromUniFi(_ s: HeatSurvey, aps: [HeatAP]) {
+        let uni = Heatmap.uniFiNames(ScanModel.shared.netMap)
+        let new = aps.compactMap { ap -> (String, String)? in
+            guard let n = uni[ap.key], s.apNames[ap.key] == nil, s.apNames[ap.bssid] == nil else { return nil }
+            return (ap.key, n)
+        }
+        guard !new.isEmpty else { return }
+        store.update(s.id) { for (k, n) in new { $0.apNames[k] = n } }
     }
 
     // MARK: Actions
@@ -876,6 +942,12 @@ private struct HeatExport: View {
     let mode: HeatMode
     let filter: HeatFilter
 
+    private func dotColor(_ spot: HeatSpot) -> Color {
+        guard let v = Heatmap.value(spot, mode: mode, filter: filter) else { return .gray }
+        let c = Heatmap.color(Heatmap.level(v, mode: mode))
+        return Color(red: c.r, green: c.g, blue: c.b)
+    }
+
     var body: some View {
         let k = min(1, 2400 / max(survey.planWidth, survey.planHeight))
         let w = survey.planWidth * k, h = survey.planHeight * k
@@ -888,12 +960,18 @@ private struct HeatExport: View {
                     Image(decorative: img, scale: 1).resizable().interpolation(.high).frame(width: w, height: h)
                     if let plan { Image(nsImage: plan).resizable().frame(width: w, height: h).blendMode(.multiply) }
                 }
-                ForEach(survey.spots) { s in Circle().fill(Color.black.opacity(0.85)).frame(width: 8, height: 8).position(x: s.x * k, y: s.y * k) }
+                ForEach(survey.spots) { s in
+                    Circle().fill(dotColor(s)).frame(width: 10, height: 10).overlay(Circle().stroke(Color.white, lineWidth: 2))
+                        .position(x: s.x * k, y: s.y * k)
+                }
                 if filter.ssid != nil {
-                    ForEach(heat?.aps ?? []) { ap in
-                        Text("AP · \(survey.apName(ap.bssid, ssid: ap.ssid))").font(.system(size: 12, weight: .semibold))
+                    // Placed access points get their names; estimated ones say so.
+                    ForEach((heat?.aps ?? []).filter(\.worthShowing)) { ap in
+                        Text("AP · \(survey.apName(ap.bssid, ssid: ap.ssid))" + (ap.placed ? "" : " (est.)"))
+                            .font(.system(size: 12, weight: .semibold))
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(Capsule().fill(Color.white)).overlay(Capsule().stroke(Color.black, lineWidth: 1))
+                            .opacity(ap.placed ? 1 : 0.75)
                             .position(x: ap.x * k, y: ap.y * k)
                     }
                 }

@@ -51,8 +51,10 @@ struct HeatSurvey: Codable, Identifiable, Hashable, Sendable {
     var planFile: String? = nil
     var scale: HeatScale? = nil
     var spots: [HeatSpot] = []
-    /// Names given to access points, by BSSID.
+    /// Names given to access points, by access point (`Heatmap.apKey`; older heatmaps have them by BSSID).
     var apNames: [String: String] = [:]
+    /// Where access points really are, placed by hand on the Map tab (plan pixels), by access point.
+    var apPlaces: [String: HeatPlace] = [:]
     /// The network shown; nil = the one the Mac was joined to.
     var network: String? = nil
     var orgID: UUID? = nil
@@ -72,6 +74,7 @@ struct HeatSurvey: Codable, Identifiable, Hashable, Sendable {
         scale = try c.decodeIfPresent(HeatScale.self, forKey: .scale)
         spots = try c.decodeIfPresent([HeatSpot].self, forKey: .spots) ?? []
         apNames = try c.decodeIfPresent([String: String].self, forKey: .apNames) ?? [:]
+        apPlaces = try c.decodeIfPresent([String: HeatPlace].self, forKey: .apPlaces) ?? [:]
         network = try c.decodeIfPresent(String.self, forKey: .network)
         orgID = try c.decodeIfPresent(UUID.self, forKey: .orgID)
     }
@@ -90,8 +93,13 @@ struct HeatSurvey: Codable, Identifiable, Hashable, Sendable {
         return count.sorted { ($0.value, $1.key) > ($1.value, $0.key) }.map(\.key)
     }
 
+    /// The access point a radio belongs to: its name (given here, or from UniFi), else "Network …AB:CD".
     func apName(_ bssid: String, ssid: String) -> String {
+        let key = Heatmap.apKey(bssid)
+        if let n = apNames[key], !n.isEmpty { return n }
         if let n = apNames[bssid], !n.isEmpty { return n }
+        // A name given to one radio before radios were grouped names the whole access point.
+        if let n = apNames.first(where: { $0.key.contains(":") && $0.key.count == 17 && Heatmap.apKey($0.key) == key })?.value, !n.isEmpty { return n }
         let tail = bssid.split(separator: ":").suffix(2).joined(separator: ":")
         return tail.isEmpty ? (ssid.isEmpty ? "Hidden network" : ssid) : "\(ssid.isEmpty ? "AP" : ssid) …\(tail)"
     }
@@ -151,14 +159,26 @@ struct HeatFilter: Hashable, Sendable {
     }
 }
 
+/// A point on the plan (plan pixels).
+struct HeatPlace: Codable, Hashable, Sendable { var x: Double, y: Double }
+
+/// One access point: all the radios (bands, network names) it broadcasts, grouped.
 struct HeatAP: Identifiable, Hashable, Sendable {
-    var id: String { bssid }
+    var id: String { key }
+    /// `Heatmap.apKey` of its radios.
+    var key: String
+    /// Its loudest radio (for the name, channel and band shown).
     var bssid: String, ssid: String
     var channel: Int, band: String, widthMHz: Int
     var best: Int
     var spotsHeard: Int
-    /// Where it probably is (plan pixels): the spots it was loudest at, weighted by power.
+    /// Where it is (plan pixels): placed by hand, or guessed from the spots it was loudest at, weighted by power.
     var x: Double, y: Double
+    var placed = false
+    var radios = 1
+    var bands: [String] = []
+    /// A guess from fewer than 3 spots is too rough to draw.
+    var worthShowing: Bool { placed || spotsHeard >= 3 }
 }
 
 struct HeatGrid: Sendable {
@@ -223,8 +243,8 @@ enum Heatmap {
         case .signal:
             return mine.map { Double($0.rssi) }.max() ?? silent
         case .oneAP:
-            guard let b = filter.bssid else { return nil }
-            return spot.readings.first { $0.bssid == b }.map { Double($0.rssi) } ?? silent
+            guard let b = filter.bssid else { return nil }   // an access point (`apKey`): its loudest radio here
+            return spot.readings.filter { apKey($0.bssid) == b && filter.band.matches($0.band) }.map { Double($0.rssi) }.max() ?? silent
         case .apCount:
             return Double(mine.filter { $0.rssi >= -75 }.count)
         case .overlap:
@@ -330,20 +350,53 @@ enum Heatmap {
     }
 
     /// The access points heard on the chosen network and band, loudest first.
-    static func accessPoints(_ spots: [HeatSpot], filter: HeatFilter) -> [HeatAP] {
-        var heard: [String: [(spot: HeatSpot, r: HeatReading)]] = [:]
-        for s in spots { for r in s.readings where filter.matches(r) && !r.bssid.isEmpty { heard[r.bssid, default: []].append((s, r)) } }
-        return heard.compactMap { bssid, list -> HeatAP? in
+    /// Which access point a radio belongs to. One access point broadcasts a BSSID per band and per network name;
+    /// they share the middle of the address and differ in the first byte (UniFi and others set "locally
+    /// administered" bits there) or in the last few bits of the last byte (Cisco, Aruba, Ruckus count up from a base).
+    /// So the key is bytes 2–5 plus the top half of byte 6. Not a BSSID: "AC:B9:12:34:5".
+    static func apKey(_ bssid: String) -> String {
+        let parts = bssid.uppercased().split(separator: ":").map(String.init)
+        guard parts.count == 6, let last = UInt8(parts[5], radix: 16) else { return bssid.uppercased() }
+        return parts[1...4].joined(separator: ":") + ":" + String(last >> 4, radix: 16, uppercase: true)
+    }
+
+    /// UniFi access points on a network map, by access point key (their radios' BSSIDs share it with the AP's MAC).
+    static func uniFiNames(_ map: NetMap?) -> [String: String] {
+        guard let map else { return [:] }
+        var out: [String: String] = [:]
+        for n in map.nodes where n.kind == .accessPoint && !n.mac.isEmpty && !n.name.isEmpty {
+            out[apKey(NetMapBuilder.mac(n.mac))] = n.name
+        }
+        return out
+    }
+
+    static func accessPoints(_ spots: [HeatSpot], filter: HeatFilter, placed: [String: HeatPlace] = [:]) -> [HeatAP] {
+        // Each access point's loudest radio at each spot.
+        var heard: [String: [UUID: (spot: HeatSpot, r: HeatReading)]] = [:]
+        var radios: [String: Set<String>] = [:]
+        for s in spots {
+            for r in s.readings where filter.matches(r) && !r.bssid.isEmpty {
+                let key = apKey(r.bssid)
+                radios[key, default: []].insert(r.bssid)
+                if let have = heard[key]?[s.id], have.r.rssi >= r.rssi { continue }
+                heard[key, default: [:]][s.id] = (s, r)
+            }
+        }
+        return heard.compactMap { key, bySpot -> HeatAP? in
+            let list = Array(bySpot.values)
             guard let loudest = list.max(by: { $0.r.rssi < $1.r.rssi }) else { return nil }
             let top = list.sorted { $0.r.rssi > $1.r.rssi }.prefix(3)
             let weights = top.map { pow(10, Double($0.r.rssi) / 10) }
             let total = weights.reduce(0, +)
-            let x = zip(top, weights).reduce(0) { $0 + $1.0.spot.x * $1.1 } / total
-            let y = zip(top, weights).reduce(0) { $0 + $1.0.spot.y * $1.1 } / total
-            return HeatAP(bssid: bssid, ssid: loudest.r.ssid, channel: loudest.r.channel, band: loudest.r.band,
-                          widthMHz: loudest.r.widthMHz, best: loudest.r.rssi, spotsHeard: list.count, x: x, y: y)
+            var x = zip(top, weights).reduce(0) { $0 + $1.0.spot.x * $1.1 } / total
+            var y = zip(top, weights).reduce(0) { $0 + $1.0.spot.y * $1.1 } / total
+            if let p = placed[key] { x = p.x; y = p.y }
+            let bands = Set(spots.flatMap { $0.readings }.filter { apKey($0.bssid) == key && filter.matches($0) }.map(\.band))
+            return HeatAP(key: key, bssid: loudest.r.bssid, ssid: loudest.r.ssid, channel: loudest.r.channel, band: loudest.r.band,
+                          widthMHz: loudest.r.widthMHz, best: loudest.r.rssi, spotsHeard: list.count, x: x, y: y,
+                          placed: placed[key] != nil, radios: radios[key]?.count ?? 1, bands: bands.sorted())
         }
-        .sorted { ($0.best, $1.bssid) > ($1.best, $0.bssid) }
+        .sorted { ($0.best, $1.key) > ($1.best, $0.key) }
     }
 
     /// Networks heard that aren't the chosen one.
@@ -387,8 +440,8 @@ enum Heatmap {
         for s in spots {
             let strong = s.readings.filter { $0.ssid == ssid && $0.rssi >= -72 && filter.band.matches($0.band) }
             for (i, a) in strong.enumerated() {
-                for b in strong.dropFirst(i + 1) where a.bssid != b.bssid && overlaps(a, b) {
-                    let key = [a.bssid, b.bssid].sorted().joined(separator: "|")
+                for b in strong.dropFirst(i + 1) where apKey(a.bssid) != apKey(b.bssid) && overlaps(a, b) {
+                    let key = [apKey(a.bssid), apKey(b.bssid)].sorted().joined(separator: "|")
                     guard pairs.insert(key).inserted else { continue }
                     out.append(HeatFinding(level: .warn, text: "\(survey.apName(a.bssid, ssid: a.ssid)) and \(survey.apName(b.bssid, ssid: b.ssid)) are both on channel \(a.channel) and loud in the same place."))
                 }

@@ -196,3 +196,55 @@ final class HeatmapZoomTests: XCTestCase {
         }
     }
 }
+
+/// Heatmap access points: radios grouped into one AP, hand-placed positions, names.
+final class HeatmapAPTests: XCTestCase {
+    private func r(_ bssid: String, _ rssi: Int, band: String = "5 GHz", ssid: String = "Example") -> HeatReading {
+        HeatReading(ssid: ssid, bssid: bssid, rssi: rssi, channel: band == "5 GHz" ? 36 : 6, band: band, widthMHz: 20)
+    }
+
+    func testRadiosOfOneAPAreGrouped() {
+        // UniFi style: the first byte differs per radio. Cisco style: the last byte counts up from a base.
+        XCTAssertEqual(Heatmap.apKey("7A:AC:B9:12:34:56"), Heatmap.apKey("76:AC:B9:12:34:56"))
+        XCTAssertEqual(Heatmap.apKey("00:11:22:33:44:50"), Heatmap.apKey("00:11:22:33:44:5F"))
+        XCTAssertNotEqual(Heatmap.apKey("00:11:22:33:44:50"), Heatmap.apKey("00:11:22:33:44:60"))   // the next AP
+        XCTAssertNotEqual(Heatmap.apKey("7A:AC:B9:12:34:56"), Heatmap.apKey("7A:AC:B9:12:35:56"))
+    }
+
+    func testOneMarkerPerAPAndPlacedPositions() {
+        let spots = (0..<4).map { i in
+            HeatSpot(x: Double(i) * 100, y: 0, readings: [r("7A:AC:B9:12:34:56", -50 - i), r("76:AC:B9:12:34:56", -60 - i, band: "2.4 GHz"),
+                                                          r("02:00:00:00:00:A0", -70)])
+        }
+        let aps = Heatmap.accessPoints(spots, filter: HeatFilter(ssid: "Example"))
+        XCTAssertEqual(aps.count, 2)                                         // two APs, not three radios
+        let main = aps.first { $0.key == Heatmap.apKey("7A:AC:B9:12:34:56") }!
+        XCTAssertEqual(main.radios, 2)
+        XCTAssertEqual(main.bands, ["2.4 GHz", "5 GHz"])
+        XCTAssertEqual(main.best, -50)
+        XCTAssertFalse(main.placed)
+        XCTAssertTrue(main.worthShowing)                                     // heard at 4 spots
+        let placed = Heatmap.accessPoints(spots, filter: HeatFilter(ssid: "Example"), placed: [main.key: HeatPlace(x: 777, y: 55)])
+        let p = placed.first { $0.key == main.key }!
+        XCTAssertTrue(p.placed)
+        XCTAssertEqual(p.x, 777); XCTAssertEqual(p.y, 55)
+        // Heard at only 2 spots: too rough a guess to draw.
+        let few = Heatmap.accessPoints(Array(spots.prefix(2)), filter: HeatFilter(ssid: "Example"))
+        XCTAssertFalse(few.allSatisfy(\.worthShowing))
+        // "Show only this AP" uses the loudest of its radios at each spot.
+        let one = Heatmap.value(spots[0], mode: .oneAP, filter: HeatFilter(ssid: "Example", bssid: main.key))
+        XCTAssertEqual(one, -50)
+    }
+
+    func testNames() {
+        var s = HeatSurvey(name: "Floor 1")
+        XCTAssertEqual(s.apName("7A:AC:B9:12:34:56", ssid: "Example"), "Example …34:56")
+        s.apNames["76:AC:B9:12:34:56"] = "Lobby"                              // named per radio before grouping
+        XCTAssertEqual(s.apName("7A:AC:B9:12:34:56", ssid: "Example"), "Lobby")
+        s.apNames[Heatmap.apKey("7A:AC:B9:12:34:56")] = "Front desk"
+        XCTAssertEqual(s.apName("76:AC:B9:12:34:56", ssid: "Example"), "Front desk")
+        // UniFi names, from the access point's own MAC.
+        var ap = MapNode(id: "ap", kind: .accessPoint); ap.name = "Addition Hobby Room"; ap.mac = "74:AC:B9:12:34:56"
+        XCTAssertEqual(Heatmap.uniFiNames(NetMap(nodes: [ap]))[Heatmap.apKey("7A:AC:B9:12:34:56")], "Addition Hobby Room")
+    }
+}
