@@ -1,41 +1,6 @@
 import SwiftUI
 import AppKit
 
-/// Where a floor plan sits over the map picture, in map-picture pixels.
-struct HeatOverlay: Codable, Hashable, Sendable {
-    /// Its centre.
-    var cx: Double, cy: Double
-    /// Its width (its height follows its own shape).
-    var width: Double
-    /// Degrees, clockwise.
-    var rotation: Double = 0
-    /// 0…1: how solid the floor plan is drawn over the map.
-    var opacity: Double = 0.85
-    /// Whether its white background was removed.
-    var stripped = true
-    /// Draw its lines white instead of black (easier to see on a dark satellite picture).
-    var white = false
-    /// 0…1: how strongly the satellite picture shows under it (lower = faded towards white).
-    var mapOpacity = 1.0
-
-    init(cx: Double, cy: Double, width: Double, rotation: Double = 0, opacity: Double = 0.85, stripped: Bool = true,
-         white: Bool = false, mapOpacity: Double = 1) {
-        self.cx = cx; self.cy = cy; self.width = width; self.rotation = rotation; self.opacity = opacity
-        self.stripped = stripped; self.white = white; self.mapOpacity = mapOpacity
-    }
-
-    /// Reads field by field, so overlays saved before a setting existed still load.
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        cx = try c.decode(Double.self, forKey: .cx); cy = try c.decode(Double.self, forKey: .cy)
-        width = try c.decode(Double.self, forKey: .width)
-        rotation = try c.decodeIfPresent(Double.self, forKey: .rotation) ?? 0
-        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 0.85
-        stripped = try c.decodeIfPresent(Bool.self, forKey: .stripped) ?? true
-        white = try c.decodeIfPresent(Bool.self, forKey: .white) ?? false
-        mapOpacity = try c.decodeIfPresent(Double.self, forKey: .mapOpacity) ?? 1
-    }
-}
 
 extension Heatmap {
     /// A floor plan with its paper removed: white and near-white (and light grey, unless it's coloured) becomes clear,

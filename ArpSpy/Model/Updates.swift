@@ -16,13 +16,14 @@ enum Updates {
     }
 
     enum Problem: LocalizedError, Equatable {
-        case noRelease, noFile, noChecksum, checksumMismatch, http(String)
+        case noRelease, noFile, noChecksum, checksumMismatch, wrongSigner, http(String)
         var errorDescription: String? {
             switch self {
             case .noRelease: return "GitHub didn’t return a release."
             case .noFile: return "The latest release has no Mac download."
             case .noChecksum: return "The release notes have no checksum for the Mac download, so it can’t be checked."
             case .checksumMismatch: return "The download doesn’t match the checksum in the release notes, so it was deleted. Try again later."
+            case .wrongSigner: return "The download isn’t signed by the same developer as this copy of ARPradar, so it wasn’t installed."
             case .http(let s): return s
             }
         }
@@ -116,7 +117,22 @@ enum Updates {
         try p.run(); p.waitUntilExit()
         let app = folder.appendingPathComponent("ARPradar.app")
         guard p.terminationStatus == 0, fm.fileExists(atPath: app.path) else { throw Problem.http("Couldn’t unzip the download.") }
+        // A signed copy only takes updates signed by the same developer (team), on top of the checksum.
+        if let mine = teamID(of: Bundle.main.bundleURL), teamID(of: app) != mine { throw Problem.wrongSigner }
         return app
+    }
+
+    /// The Apple developer team that signed an app, after checking the signature is intact; nil when it isn't
+    /// signed by a team (an ad-hoc build) or the signature is broken.
+    static func teamID(of app: URL) -> String? {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(app as CFURL, [], &code) == errSecSuccess, let code,
+              SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSCheckAllArchitectures), nil) == errSecSuccess
+        else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let dict = info as? [String: Any] else { return nil }
+        return dict[kSecCodeInfoTeamIdentifier as String] as? String
     }
 
     /// This copy can be replaced in place when it runs from an Applications folder.

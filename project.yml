@@ -40,9 +40,16 @@ targets:
         CURRENT_PROJECT_VERSION: 5
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: "-"
-        ENABLE_HARDENED_RUNTIME: NO
         ENABLE_APP_SANDBOX: NO
+        CODE_SIGN_ENTITLEMENTS: ArpSpy/ArpSpy.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        # Apple's hardened runtime (needed for notarization) in Release builds only: Debug keeps it off so the unit
+        # tests can load into the app.
+        Debug:
+          ENABLE_HARDENED_RUNTIME: NO
+        Release:
+          ENABLE_HARDENED_RUNTIME: YES
   # ARPradar for iPhone: runs scans on an ARPradar Sensor (Raspberry Pi) over Bluetooth. Shares the sensor code with
   # the Mac app. Build with the ARPradarSensor scheme.
   ARPradarSensor:

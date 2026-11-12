@@ -56,23 +56,8 @@ enum WiFiText {
     static func security(_ s: CWSecurity) -> String { securityNames.first { $0.0 == s }?.1 ?? "" }
     static func security(of n: CWNetwork) -> String { securityNames.first { n.supportsSecurity($0.0) }?.1 ?? "" }
 
-    /// The centre channel of a wide channel (CoreWLAN reports the primary 20 MHz channel).
     static func centre(primary ch: Int, widthMHz: Int, band: String) -> Double {
-        guard widthMHz > 20 else { return Double(ch) }
-        if band == "6 GHz" {
-            let size = widthMHz / 20
-            let start = (ch - 1) / 4 / size * size
-            return Double(1 + 4 * start + 2 * (size - 1))
-        }
-        if band == "5 GHz" {
-            let blocks: [Int: [ClosedRange<Int>]] = [
-                40: [36...40, 44...48, 52...56, 60...64, 100...104, 108...112, 116...120, 124...128, 132...136, 140...144, 149...153, 157...161, 165...169],
-                80: [36...48, 52...64, 100...112, 116...128, 132...144, 149...161, 165...177],
-                160: [36...64, 100...128, 149...177],
-            ]
-            if let r = blocks[widthMHz]?.first(where: { $0.contains(ch) }) { return Double(r.lowerBound + r.upperBound) / 2 }
-        }
-        return Double(ch)
+        WiFiBands.centre(primary: ch, widthMHz: widthMHz, band: band)
     }
 
     /// Signal colour bands, in dBm.

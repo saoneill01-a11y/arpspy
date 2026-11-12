@@ -89,6 +89,8 @@ struct HeatmapView: View {
     @State private var nameText = ""
     @State private var confirmDelete = false
     @State private var errorText: String? = nil
+    /// An .arpheatmap file being imported that's a copy of a heatmap already here (asks Replace or Keep Both).
+    @State private var importing: Data? = nil
 
     @State private var heat: HeatResult? = nil
     @State private var dragging: (id: UUID, to: CGPoint)? = nil
@@ -157,6 +159,13 @@ struct HeatmapView: View {
         } message: {
             Text("Its floor plan and every spot measured go with it. You can get it back from the Trash.")
         }
+        .confirmationDialog("You already have this heatmap", isPresented: Binding(get: { importing != nil }, set: { if !$0 { importing = nil } })) {
+            Button("Replace Mine") { finishImport(replace: true) }
+            Button("Keep Both") { finishImport(replace: false) }
+            Button("Cancel", role: .cancel) { importing = nil }
+        } message: {
+            Text("The file is a copy of a heatmap on this Mac. Replace yours with it (it stays in the same organization), or keep both.")
+        }
         .alert("Heatmap", isPresented: Binding(get: { errorText != nil }, set: { if !$0 { errorText = nil } })) {
             Button("OK") { errorText = nil }
         } message: { Text(errorText ?? "") }
@@ -175,10 +184,14 @@ struct HeatmapView: View {
                 if !loose.isEmpty { Section("Standalone") { ForEach(loose) { s in pick(s) } } }
                 if !store.surveys.isEmpty { Divider() }
                 Button("New Heatmap…") { nameText = store.uniqueName("Floor 1"); naming = .new }
+                Button("Import Heatmap…") { importHeatmap() }
+                    .help("Open a heatmap made on the ARPradar iPhone app or another Mac (.arpheatmap)")
                 if let s = survey {
                     Button("Save as New Heatmap…") { nameText = store.uniqueName(s.name + " copy"); naming = .copy }
                         .help("A separate copy with the same floor plan and spots, standalone until you save it to an organization")
                     Button("Rename…") { nameText = s.name; naming = .rename }
+                    Button("Export Heatmap…") { exportHeatmap(s) }
+                        .help("One .arpheatmap file with the floor plan and every spot, for the iPhone app or another Mac")
                     Button("Move to Trash…") { confirmDelete = true }
                 }
             }
@@ -1215,6 +1228,32 @@ struct HeatmapView: View {
             try store.setPlan(s.id, from: url)
             store.update(s.id) { $0.baseFile = nil; $0.overlay = nil }   // a plan of its own: no map underneath any more
         } catch { errorText = error.localizedDescription }
+    }
+
+    private func importHeatmap() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: HeatmapFile.fileExtension) ?? .json]
+        panel.message = "Choose a heatmap file (.arpheatmap) from the ARPradar iPhone app or another Mac."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            if store.hasCopy(of: data) { importing = data; return }
+            currentID = try store.importFile(data, replace: false).uuidString
+        } catch { errorText = error.localizedDescription }
+    }
+
+    private func finishImport(replace: Bool) {
+        guard let data = importing else { return }
+        importing = nil
+        do { currentID = try store.importFile(data, replace: replace).uuidString } catch { errorText = error.localizedDescription }
+    }
+
+    private func exportHeatmap(_ s: HeatSurvey) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: HeatmapFile.fileExtension) ?? .json]
+        panel.nameFieldStringValue = HeatmapFile.fileName(s)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try store.exportFile(s.id).write(to: url, options: .atomic) } catch { errorText = error.localizedDescription }
     }
 
     private func exportPNG(_ s: HeatSurvey) {
