@@ -3,6 +3,8 @@ import SwiftUI
 @main
 struct ArpSpyApp: App {
     init() {
+        // Settings saved under the app's old ID come along (once).
+        SettingsMove.runOnce()
         // Solid, always-visible scroll bars instead of the see-through overlay ones.
         UserDefaults.standard.register(defaults: ["AppleShowScrollBars": "Always"])
         AppMode.setDefault()

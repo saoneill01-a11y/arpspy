@@ -62,6 +62,42 @@ enum SensorProtocol {
     }
 }
 
+/// Words for the device this app runs on, used in messages ("this Mac" / "this iPhone").
+enum SensorPlatform {
+    #if os(iOS)
+    static let thisDevice = "this iPhone", tap = "Tap"
+    static let bluetoothSettings = "Settings › Privacy & Security › Bluetooth"
+    #else
+    static let thisDevice = "this Mac", tap = "Click"
+    static let bluetoothSettings = "System Settings › Privacy & Security › Bluetooth"
+    #endif
+}
+
+#if os(iOS)
+/// Owner keys, one per sensor id, in the iPhone's Keychain (this device only, never synced to iCloud).
+enum SensorKeychain {
+    private static let service = "ARPradar Sensor"
+    private static func query(_ id: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: id]
+    }
+    static func get(_ id: String) -> Data? {
+        var q = query(id)
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess else { return nil }
+        return out as? Data
+    }
+    static func set(_ id: String, _ secret: Data) {
+        delete(id)
+        var q = query(id)
+        q[kSecValueData as String] = secret
+        q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(q as CFDictionary, nil)
+    }
+    static func delete(_ id: String) { SecItemDelete(query(id) as CFDictionary) }
+}
+#else
 /// Owner keys, one per sensor id, in ~/Library/Application Support/ArpSpy/sensor-owners.json (readable only by this
 /// user). Not the Keychain: an app that isn't signed by Apple yet gets a Keychain password prompt after every update.
 enum SensorKeychain {
@@ -84,11 +120,15 @@ enum SensorKeychain {
     static func set(_ id: String, _ secret: Data) { var m = load(); m[id] = SensorProtocol.hex(secret); save(m) }
     static func delete(_ id: String) { var m = load(); m[id] = nil; save(m) }
 }
+#endif
 
 /// One device in the sensor's results.
-struct SensorRow: Equatable {
+struct SensorRow: Equatable, Codable, Identifiable, Hashable {
+    var id: UInt32 { ip.value }
     var ip: IPv4, mac = "", name = "", vendor = "", ports: [UInt16] = [], ms: Double? = nil
     var web = "", upnp = "", snmp = "", snmpName = "", ubnt = ""
+
+    init(ip: IPv4) { self.ip = ip }
 
     init?(_ d: [String: Any]) {
         guard let ip = (d["ip"] as? String).flatMap(IPv4.init) else { return nil }
@@ -99,6 +139,18 @@ struct SensorRow: Equatable {
         web = d["web"] as? String ?? ""; upnp = d["upnp"] as? String ?? ""; snmp = d["snmp"] as? String ?? ""
         snmpName = d["snmpName"] as? String ?? ""; ubnt = d["ubnt"] as? String ?? ""
     }
+}
+
+/// A finished scan from the sensor, handed to the app (`SensorLink.onResults`).
+struct SensorScanResult {
+    var rows: [SensorRow]
+    var range: String
+    var seconds: Double
+    /// "Sensor · Office Wi-Fi"
+    var label: String
+    /// The Wi-Fi network the sensor scanned from ("" = unknown).
+    var ssid: String
+    var cancelled: Bool
 }
 
 @MainActor
@@ -128,6 +180,8 @@ final class SensorLink: NSObject, ObservableObject {
     @Published private(set) var networks: [WiFi] = []
     /// Shown under the buttons after something finishes ("128 devices in 19.4 s").
     @Published private(set) var note = ""
+    /// What to do with a finished scan; returns the note to show ("128 devices in 19.4 s · shown in the main window").
+    var onResults: ((SensorScanResult) -> String)?
 
     private var central: CBCentralManager?
     private var peripheral: CBPeripheral?
@@ -178,7 +232,7 @@ final class SensorLink: NSObject, ObservableObject {
             try? await Task.sleep(nanoseconds: 20_000_000_000)
             guard !Task.isCancelled, let self, self.selected == id, self.phase == .connecting else { return }
             self.disconnect()
-            self.phase = .failed("Couldn’t reach the sensor. Make sure it’s on and nearby, then click it again.")
+            self.phase = .failed("Couldn’t reach the sensor. Make sure it’s on and nearby, then \(SensorPlatform.tap.lowercased()) it again.")
         }
     }
 
@@ -197,8 +251,10 @@ final class SensorLink: NSObject, ObservableObject {
     var isWorking: Bool { if case .working = phase { return true } else { return false } }
 
     /// One-step scan: with `ssid`, the sensor joins that Wi-Fi just for this scan, then leaves it and deletes it.
-    func scan(ssid: String?, password: String, range: String, quiet: Bool) {
+    func scan(ssid: String?, password: String, range: String, quiet: Bool, community: String = "") {
         var cmd: [String: Any] = ["cmd": "scan", "quiet": quiet]
+        let c = community.trimmingCharacters(in: .whitespaces)
+        if !c.isEmpty { cmd["community"] = c }
         if let ssid, !ssid.isEmpty { cmd["ssid"] = ssid; cmd["password"] = password }
         if !range.trimmingCharacters(in: .whitespaces).isEmpty { cmd["range"] = range.trimmingCharacters(in: .whitespaces) }
         phase = .working(0, ssid.map { "Joining \($0)…" } ?? "Starting…")
@@ -245,7 +301,7 @@ final class SensorLink: NSObject, ObservableObject {
         version = info["version"] as? String ?? ""
         let owned = info["owned"] as? Bool ?? true
         if !owned, let pubHex = info["claimPub"] as? String, let sensorPub = SensorProtocol.unhex(pubHex) {
-            // A free sensor: this Mac becomes its owner.
+            // A free sensor: this device becomes its owner.
             let mine = Curve25519.KeyAgreement.PrivateKey()
             guard let secret = try? SensorProtocol.ownerSecret(mine: mine, sensorPublic: sensorPub) else { phase = .failed("Couldn’t set up the sensor."); return }
             SensorKeychain.set(id, secret)
@@ -285,11 +341,11 @@ final class SensorLink: NSObject, ObservableObject {
         case "devices":
             let rows = (ev["devices"] as? [[String: Any]] ?? []).compactMap(SensorRow.init)
             let seconds = ev["seconds"] as? Double ?? 0
-            let joined = ev["ssid"] as? String
-            let label = "Sensor" + (joined.map { " · \($0)" } ?? (ssid.isEmpty ? "" : " · \(ssid)"))
-            ScanModel.shared.showSensorScan(rows: rows, range: ev["range"] as? String ?? "", seconds: seconds, label: label,
-                                           cancelled: ev["cancelled"] as? Bool ?? false)
-            note = "\(rows.count) devices in \(String(format: "%.1f", seconds)) s · shown in the main window"
+            let net = (ev["ssid"] as? String) ?? ssid
+            let label = "Sensor" + (net.isEmpty ? "" : " · \(net)")
+            let result = SensorScanResult(rows: rows, range: ev["range"] as? String ?? "", seconds: seconds, label: label,
+                                          ssid: net, cancelled: ev["cancelled"] as? Bool ?? false)
+            note = onResults?(result) ?? "\(rows.count) devices in \(String(format: "%.1f", seconds)) s"
         case "done":
             phase = .ready
             send(["cmd": "status"])
@@ -312,9 +368,9 @@ extension SensorLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             case .poweredOn:
                 if case .bluetoothOff = phase { phase = .idle }
                 scan()
-            case .unauthorized: phase = .bluetoothOff("ARPradar isn’t allowed to use Bluetooth. Turn it on in System Settings › Privacy & Security › Bluetooth.")
-            case .poweredOff: phase = .bluetoothOff("Bluetooth is off on this Mac.")
-            case .unsupported: phase = .bluetoothOff("This Mac has no Bluetooth LE.")
+            case .unauthorized: phase = .bluetoothOff("ARPradar isn’t allowed to use Bluetooth. Turn it on in \(SensorPlatform.bluetoothSettings).")
+            case .poweredOff: phase = .bluetoothOff("Bluetooth is off on \(SensorPlatform.thisDevice).")
+            case .unsupported: phase = .bluetoothOff("\(SensorPlatform.thisDevice.prefix(1).uppercased() + SensorPlatform.thisDevice.dropFirst()) has no Bluetooth LE.")
             default: break
             }
         }
@@ -349,7 +405,7 @@ extension SensorLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         MainActor.assumeIsolated {
             guard selected == id else { return }
             peripheral = nil; chars = [:]; pending = nil; queue = []
-            phase = .failed("The sensor disconnected. Click it again to reconnect.")
+            phase = .failed("The sensor disconnected. \(SensorPlatform.tap) it again to reconnect.")
             selected = nil
         }
     }
@@ -413,14 +469,14 @@ extension SensorLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         MainActor.assumeIsolated {
             if claimInFlight {
                 claimInFlight = false
-                if failed { pending = nil; queue = []; phase = .failed("Couldn’t set this Mac up as the sensor’s owner. Click it again to retry."); return }
+                if failed { pending = nil; queue = []; phase = .failed("Couldn’t set \(SensorPlatform.thisDevice) up as the sensor’s owner. \(SensorPlatform.tap) it again to retry."); return }
                 readInfo()   // the claimed sensor: now send the waiting command with a fresh nonce
                 return
             }
             if failed {
                 // Most often an old nonce (two apps nearby, or a reconnect): one more try with a fresh one.
                 if !retried { retried = true; readInfo(); return }
-                // Still refused: this Mac's key no longer fits (released or reset elsewhere).
+                // Still refused: this device's key no longer fits (released or reset elsewhere).
                 if !sensorID.isEmpty { SensorKeychain.delete(sensorID) }
                 pending = nil; queue = []
                 phase = .ownedByOther

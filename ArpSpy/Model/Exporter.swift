@@ -32,12 +32,7 @@ enum Exporter {
     /// One CSV cell. Quoted when it needs to be. A cell that starts like a formula (=, +, -, @, tab, return)
     /// gets a leading apostrophe so Excel and Numbers show it as text instead of running it: device names,
     /// web page titles and SNMP strings come straight off the network and could say anything.
-    static func csvCell(_ s: String) -> String {
-        var s = s
-        if let first = s.first, "=+-@\t\r".contains(first) { s = "'" + s }
-        return s.contains(where: { $0 == "," || $0 == "\"" || $0.isNewline || $0 == "'" && s.hasPrefix("'") })
-            ? "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" : s
-    }
+    static func csvCell(_ s: String) -> String { CSV.cell(s) }
 
     /// Tab-separated, so it pastes cleanly into Excel. Tabs and line breaks inside a cell become spaces.
     static func tsv(_ devices: [Device]) -> String {

@@ -9,3 +9,4 @@ build.noindex/
 build-release.noindex/
 CLAUDE.md
 .claude/
+iPhone/Info.plist

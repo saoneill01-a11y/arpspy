@@ -7,12 +7,14 @@ on:
     paths:
       - "ArpSpy/**"
       - "ArpSpyTests/**"
+      - "iPhone/**"
       - "project.yml"
       - ".github/workflows/build.yml"
   pull_request:
     paths:
       - "ArpSpy/**"
       - "ArpSpyTests/**"
+      - "iPhone/**"
       - "project.yml"
       - ".github/workflows/build.yml"
   workflow_dispatch:   # adds a "Run workflow" button on the Actions tab
@@ -40,3 +42,6 @@ jobs:
 
       - name: Test
         run: xcodebuild -scheme ArpSpy -destination 'platform=macOS' -derivedDataPath build test
+
+      - name: Build the iPhone app (not signed)
+        run: xcodebuild -scheme ARPradarSensor -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO build

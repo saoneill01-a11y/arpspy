@@ -1,9 +1,10 @@
 # XcodeGen project description. Run `xcodegen` in this folder to create ArpSpy.xcodeproj.
 name: ArpSpy
 options:
-  bundleIdPrefix: com.example
+  bundleIdPrefix: com.arpradar
   deploymentTarget:
     macOS: "14.0"
+    iOS: "17.0"
 targets:
   ArpSpy:
     type: application
@@ -30,7 +31,7 @@ targets:
           NSAllowsArbitraryLoads: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.arpspy
+        PRODUCT_BUNDLE_IDENTIFIER: com.arpradar.mac
         # The app file is ARPradar.app; the code module stays ArpSpy so tests and saved data are unchanged.
         PRODUCT_NAME: ARPradar
         PRODUCT_MODULE_NAME: ArpSpy
@@ -42,6 +43,46 @@ targets:
         ENABLE_HARDENED_RUNTIME: NO
         ENABLE_APP_SANDBOX: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+  # ARPradar for iPhone: runs scans on an ARPradar Sensor (Raspberry Pi) over Bluetooth. Shares the sensor code with
+  # the Mac app. Build with the ARPradarSensor scheme.
+  ARPradarSensor:
+    type: application
+    platform: iOS
+    sources:
+      - path: iPhone
+      - ArpSpy/Sensor/SensorLink.swift
+      - ArpSpy/Model/IPv4.swift
+      - ArpSpy/Model/NetworkText.swift
+      - ArpSpy/Scan/OUIDatabase.swift
+      - ArpSpy/Scan/Ports.swift
+      - path: ArpSpy/Resources/oui.csv
+        buildPhase: resources
+    info:
+      path: iPhone/Info.plist
+      properties:
+        CFBundleDisplayName: ARPradar
+        CFBundleName: ARPradar
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHumanReadableCopyright: © 2026 Sean O'Neill. Free software under the GNU GPL v3.
+        NSBluetoothAlwaysUsageDescription: ARPradar uses Bluetooth to talk to your ARPradar Sensor, which runs the network scans.
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        # The only encryption is Apple's own (CryptoKit) protecting the Bluetooth link to the sensor.
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.arpradar.sensor
+        PRODUCT_NAME: ARPradar
+        PRODUCT_MODULE_NAME: ARPradarSensor
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: 1.2.0
+        CURRENT_PROJECT_VERSION: 1
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
   ArpSpyTests:
     type: bundle.unit-test
     platform: macOS
@@ -64,3 +105,7 @@ schemes:
     test:
       targets:
         - ArpSpyTests
+  ARPradarSensor:
+    build:
+      targets:
+        ARPradarSensor: all

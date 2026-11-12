@@ -23,7 +23,8 @@ echo "Building…"
 xcodebuild -scheme ArpSpy -configuration Release -destination 'platform=macOS' -derivedDataPath "$OUT" -quiet build
 
 echo "Installing in Applications…"
-osascript -e 'tell application id "com.example.arpspy" to quit' 2>/dev/null || true
+osascript -e 'tell application id "com.arpradar.mac" to quit' 2>/dev/null || true
+osascript -e 'tell application id "com.example.arpspy" to quit' 2>/dev/null || true   # the app's old ID
 sleep 1
 rm -rf /Applications/ARPradar.app
 cp -R "$OUT/Build/Products/Release/ARPradar.app" /Applications/

@@ -17,7 +17,13 @@ struct SensorView: View {
                 .padding(16)
         }
         .frame(minWidth: 640, minHeight: 400)
-        .onAppear { link.start() }
+        .onAppear {
+            link.onResults = { r in
+                ScanModel.shared.showSensorScan(rows: r.rows, range: r.range, seconds: r.seconds, label: r.label, cancelled: r.cancelled)
+                return "\(r.rows.count) devices in \(String(format: "%.1f", r.seconds)) s · shown in the main window"
+            }
+            link.start()
+        }
     }
 
     private var nearbyList: some View {
