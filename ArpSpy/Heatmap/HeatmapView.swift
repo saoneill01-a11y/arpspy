@@ -309,8 +309,8 @@ struct HeatmapView: View {
                     planPicture(s)
                         .frame(width: s.planWidth * f.k, height: s.planHeight * f.k)
                         .offset(x: f.origin.x, y: f.origin.y)
-                        .opacity(tab == .map ? planOpacity : 1)
-                    if tab == .map, let img = heat?.image {
+                        .opacity(tab == .map && !channelView ? planOpacity : 1)
+                    if tab == .map, !channelView, let img = heat?.image {
                         Image(decorative: img, scale: 1).resizable().interpolation(.high)
                             .frame(width: s.planWidth * f.k, height: s.planHeight * f.k)
                             .offset(x: f.origin.x, y: f.origin.y)
@@ -359,7 +359,8 @@ struct HeatmapView: View {
                                 .contextMenu { apMenu(ap, s) }
                         }
                     }
-                    ForEach(s.spots) { spot in
+                    // Same channel shows only the access points on the map: no measured spots, no heat colours.
+                    ForEach(channelView ? [] : s.spots) { spot in
                         spotDot(spot, s)
                             .position(dragging?.id == spot.id ? dragging!.to : view(spot.x, spot.y))
                             .gesture(tab == .walk ? moveGesture(spot, s, f) : nil)
@@ -368,7 +369,7 @@ struct HeatmapView: View {
                                 Button("Delete Spot") { store.update(s.id) { $0.spots.removeAll { $0.id == spot.id } }; if selected == spot.id { selected = nil } }
                             }
                     }
-                    if tab == .map, let weak = heat?.findings.first(where: { $0.spot != nil }), let spot = s.spots.first(where: { $0.id == weak.spot }) {
+                    if tab == .map, !channelView, let weak = heat?.findings.first(where: { $0.spot != nil }), let spot = s.spots.first(where: { $0.id == weak.spot }) {
                         weakLabel(spot).position(x: view(spot.x, spot.y).x, y: view(spot.x, spot.y).y - 26).allowsHitTesting(false)
                     }
                     if scaling, !scalePoints.isEmpty {
@@ -478,6 +479,9 @@ struct HeatmapView: View {
         .contentShape(Circle())
         .help(spotHelp(spot, s))
     }
+
+    /// Highlight › Same channel on the Map tab: just the plan and the access points.
+    private var channelView: Bool { tab == .map && highlightChannels }
 
     /// Same channel pairs on the chosen band (all bands for the details card).
     private var allClashes: [Heatmap.ChannelClash] {
@@ -967,6 +971,8 @@ struct HeatmapView: View {
             Toggle("Same channel", isOn: $highlightChannels).toggleStyle(.checkbox)
                 .help("Tags each access point with its channel on one band: red when it shares that channel with another AP where both are strong, green when it's clear. Point at an AP to see who it clashes with.")
             if highlightChannels {
+                Text("Showing only the access points on the map. Untick to see the heat colours and measured spots again.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Picker("", selection: $clashBand) {
                     Text("2.4 GHz").tag("2.4 GHz"); Text("5 GHz").tag("5 GHz"); Text("6 GHz").tag("6 GHz")
                 }
