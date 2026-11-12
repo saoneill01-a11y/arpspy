@@ -410,3 +410,39 @@ final class OverlayAndClashTests: XCTestCase {
         XCTAssertTrue(Heatmap.channelClashes(two, spots: [HeatSpot(x: 0, y: 0, readings: [r("A", -40, "2.4 GHz", 1, 20), r("B", -40, "2.4 GHz", 11, 20)])]).isEmpty)
     }
 }
+
+/// Floor plan import: PDFs come in sharp; white lines and a faded map in the combined plan; older overlays still load.
+@MainActor
+final class OverlayStyleTests: XCTestCase {
+    func testPDFPlansAreDrawnLarge() throws {
+        // A made-up 252 × 154 point PDF (about the size of a house plan on a letter page): 3000 pixels across, not ~500.
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("plan-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        var box = CGRect(x: 0, y: 0, width: 252, height: 154)
+        let ctx = try XCTUnwrap(CGContext(url as CFURL, mediaBox: &box, nil))
+        ctx.beginPDFPage(nil); ctx.setLineWidth(0.5); ctx.stroke(CGRect(x: 10, y: 10, width: 200, height: 100)); ctx.endPDFPage(); ctx.closePDF()
+        let png = try XCTUnwrap(HeatmapStore.planPNG(url))
+        XCTAssertEqual(png.size.width, 3000, accuracy: 1)
+        XCTAssertEqual(png.size.height, 3000 * 154 / 252, accuracy: 2)
+    }
+
+    func testWhiteLinesAndFadedMap() throws {
+        func img(_ w: Int, _ h: Int, _ fill: NSColor) -> NSImage {
+            let i = NSImage(size: NSSize(width: w, height: h)); i.lockFocus(); fill.setFill(); NSRect(x: 0, y: 0, width: w, height: h).fill(); i.unlockFocus(); return i
+        }
+        let base = img(100, 100, .black), plan = img(10, 10, .black)
+        var o = HeatOverlay(cx: 25, cy: 25, width: 10, opacity: 1)
+        o.white = true; o.mapOpacity = 0.5
+        let data = try XCTUnwrap(Heatmap.composite(base: base, basePixels: CGSize(width: 100, height: 100), overlay: plan,
+                                                   overlayPixels: CGSize(width: 10, height: 10), o: o))
+        let rep = try XCTUnwrap(NSBitmapImageRep(data: data))
+        XCTAssertGreaterThan(rep.colorAt(x: 25, y: 25)!.brightnessComponent, 0.95)                 // the plan's lines, white
+        XCTAssertEqual(rep.colorAt(x: 75, y: 75)!.brightnessComponent, 0.5, accuracy: 0.1)        // black map faded halfway
+    }
+
+    func testOlderOverlaysStillLoad() throws {
+        let old = #"{"cx": 10, "cy": 20, "width": 300, "rotation": 5, "opacity": 0.8, "stripped": true}"#
+        let o = try JSONDecoder().decode(HeatOverlay.self, from: Data(old.utf8))
+        XCTAssertEqual(o.width, 300); XCTAssertFalse(o.white); XCTAssertEqual(o.mapOpacity, 1)
+    }
+}

@@ -735,8 +735,10 @@ final class HeatmapStore: ObservableObject {
         var size = img.size
         if let bitmap = img.representations.compactMap({ $0 as? NSBitmapImageRep }).first, bitmap.pixelsWide > 0 {
             size = CGSize(width: bitmap.pixelsWide, height: bitmap.pixelsHigh)
-        } else {
-            size = CGSize(width: size.width * 2, height: size.height * 2)
+        } else if size.width > 0, size.height > 0 {
+            // A PDF (or other drawing) has no pixels of its own: draw it 3000 pixels across, so thin walls stay sharp.
+            let f = 3000 / max(size.width, size.height)
+            size = CGSize(width: size.width * f, height: size.height * f)
         }
         guard size.width >= 1, size.height >= 1 else { return nil }
         let f = min(1, 3000 / max(size.width, size.height))

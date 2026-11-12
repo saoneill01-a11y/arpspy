@@ -13,6 +13,28 @@ struct HeatOverlay: Codable, Hashable, Sendable {
     var opacity: Double = 0.85
     /// Whether its white background was removed.
     var stripped = true
+    /// Draw its lines white instead of black (easier to see on a dark satellite picture).
+    var white = false
+    /// 0…1: how strongly the satellite picture shows under it (lower = faded towards white).
+    var mapOpacity = 1.0
+
+    init(cx: Double, cy: Double, width: Double, rotation: Double = 0, opacity: Double = 0.85, stripped: Bool = true,
+         white: Bool = false, mapOpacity: Double = 1) {
+        self.cx = cx; self.cy = cy; self.width = width; self.rotation = rotation; self.opacity = opacity
+        self.stripped = stripped; self.white = white; self.mapOpacity = mapOpacity
+    }
+
+    /// Reads field by field, so overlays saved before a setting existed still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cx = try c.decode(Double.self, forKey: .cx); cy = try c.decode(Double.self, forKey: .cy)
+        width = try c.decode(Double.self, forKey: .width)
+        rotation = try c.decodeIfPresent(Double.self, forKey: .rotation) ?? 0
+        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 0.85
+        stripped = try c.decodeIfPresent(Bool.self, forKey: .stripped) ?? true
+        white = try c.decodeIfPresent(Bool.self, forKey: .white) ?? false
+        mapOpacity = try c.decodeIfPresent(Double.self, forKey: .mapOpacity) ?? 1
+    }
 }
 
 extension Heatmap {
@@ -56,7 +78,10 @@ extension Heatmap {
               let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = ctx
-        base.draw(in: NSRect(x: 0, y: 0, width: w, height: h))
+        // The map, faded towards white as asked.
+        NSColor.white.setFill(); NSRect(x: 0, y: 0, width: w, height: h).fill()
+        base.draw(in: NSRect(x: 0, y: 0, width: w, height: h), from: .zero, operation: .sourceOver, fraction: o.mapOpacity)
+        let overlay = o.white ? whitened(overlay) : overlay
         let cg = ctx.cgContext
         let ow = o.width, oh = o.width * overlayPixels.height / overlayPixels.width
         cg.translateBy(x: o.cx, y: Double(h) - o.cy)           // plan pixels have y going down; the context's go up
@@ -64,6 +89,17 @@ extension Heatmap {
         overlay.draw(in: NSRect(x: -ow / 2, y: -oh / 2, width: ow, height: oh), from: .zero, operation: .sourceOver, fraction: o.opacity)
         NSGraphicsContext.restoreGraphicsState()
         return rep.representation(using: .png, properties: [:])
+    }
+
+    /// The same picture with every line white (its see-through parts stay see-through).
+    static func whitened(_ img: NSImage) -> NSImage {
+        let out = NSImage(size: img.size)
+        out.lockFocus()
+        img.draw(in: NSRect(origin: .zero, size: img.size))
+        NSColor.white.set()
+        NSRect(origin: .zero, size: img.size).fill(using: .sourceAtop)
+        out.unlockFocus()
+        return out
     }
 
     static func pixelSize(_ url: URL) -> CGSize? {
@@ -143,8 +179,19 @@ struct OverlayComposer: View {
     @State private var dragStart: CGPoint? = nil
     @State private var pinchStart: Double? = nil
     @State private var turnStart: Double? = nil
+    /// Zooming the view in on the map (1 = whole map), to line up details. Doesn't change the plan.
+    @State private var zoom = 1.0
+    @State private var viewZoomStart: Double? = nil
 
-    private var picture: NSImage? { o.stripped ? stripped : original }
+    /// White-line versions, made once (redrawing a big picture on every drag step would make dragging lag).
+    @State private var whiteStripped: NSImage? = nil
+    @State private var whiteOriginal: NSImage? = nil
+
+    private var picture: NSImage? {
+        guard let p = o.stripped ? stripped : original else { return nil }
+        guard o.white else { return p }
+        return (o.stripped ? whiteStripped : whiteOriginal) ?? p
+    }
     private var aspect: Double {
         guard let p = picture, p.size.width > 0 else { return 1 }
         return p.size.height / p.size.width
@@ -153,15 +200,26 @@ struct OverlayComposer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Line up the floor plan with the map").font(.headline)
-            Text("Drag the floor plan onto the building. Pinch or use Size to scale it, and Turn to rotate it, until the walls sit on the roof lines. Fade it to see the map underneath.")
+            Text("Drag the floor plan onto the building. Pinch it or use Size to scale it, and Turn to rotate it, until the walls sit on the roof lines. Zoom in (or pinch the map) for the fine lining up; fade the map or switch the plan to white lines to see both better.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             GeometryReader { g in
-                let k = min(g.size.width / basePixels.width, g.size.height / basePixels.height)
-                let ox = (g.size.width - basePixels.width * k) / 2, oy = (g.size.height - basePixels.height * k) / 2
+                let k = min(g.size.width / basePixels.width, g.size.height / basePixels.height) * zoom
+                let area = CGSize(width: max(g.size.width, basePixels.width * k), height: max(g.size.height, basePixels.height * k))
+                let ox = (area.width - basePixels.width * k) / 2, oy = (area.height - basePixels.height * k) / 2
+                ScrollView([.horizontal, .vertical]) {
                 ZStack(alignment: .topLeading) {
+                    Color.white.frame(width: basePixels.width * k, height: basePixels.height * k).offset(x: ox, y: oy)
                     Image(nsImage: base).resizable()
                         .frame(width: basePixels.width * k, height: basePixels.height * k)
+                        .opacity(o.mapOpacity)
                         .offset(x: ox, y: oy)
+                        // Pinching the map (not the plan) zooms the view.
+                        .gesture(MagnifyGesture()
+                            .onChanged { v in
+                                if viewZoomStart == nil { viewZoomStart = zoom }
+                                zoom = min(8, max(1, viewZoomStart! * v.magnification))
+                            }
+                            .onEnded { _ in viewZoomStart = nil })
                     if let p = picture {
                         Image(nsImage: p).resizable()
                             .frame(width: o.width * k, height: o.width * aspect * k)
@@ -191,6 +249,9 @@ struct OverlayComposer: View {
                             .help("Drag to move; pinch to size; two-finger twist to turn")
                     }
                 }
+                .frame(width: area.width, height: area.height, alignment: .topLeading)
+                }
+                .scrollIndicators(zoom > 1.001 ? .visible : .hidden)
             }
             .background(Color.black.opacity(0.85))
             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -211,9 +272,27 @@ struct OverlayComposer: View {
                     .controlSize(.small)
                 }
                 GridRow {
-                    Text("Fade").foregroundStyle(.secondary)
+                    Text("Plan").foregroundStyle(.secondary)
                     Slider(value: $o.opacity, in: 0.2...1)
-                    Text("\(Int((o.opacity * 100).rounded()))% solid").font(.caption).monospacedDigit().frame(width: 110, alignment: .leading)
+                    HStack(spacing: 6) {
+                        Text("\(Int((o.opacity * 100).rounded()))% solid").font(.caption).monospacedDigit()
+                        Picker("", selection: $o.white) { Text("Black").tag(false); Text("White").tag(true) }
+                            .pickerStyle(.segmented).labelsHidden().fixedSize()
+                            .help("Plan lines in black, or white to stand out on a dark satellite picture")
+                    }
+                }
+                GridRow {
+                    Text("Map").foregroundStyle(.secondary)
+                    Slider(value: $o.mapOpacity, in: 0.15...1)
+                    Text("\(Int((o.mapOpacity * 100).rounded()))% (fade the satellite)").font(.caption).monospacedDigit().frame(width: 150, alignment: .leading)
+                }
+                GridRow {
+                    Text("Zoom").foregroundStyle(.secondary)
+                    Slider(value: Binding(get: { log2(zoom) }, set: { zoom = pow(2, $0) }), in: 0...3)
+                    HStack(spacing: 6) {
+                        Text("\(Int((zoom * 100).rounded()))%").font(.caption).monospacedDigit()
+                        Button("Fit") { zoom = 1 }.controlSize(.small).disabled(zoom <= 1.001)
+                    }
                 }
             }
             HStack {
@@ -226,6 +305,10 @@ struct OverlayComposer: View {
         }
         .padding(16)
         .frame(minWidth: 900, idealWidth: 1040, minHeight: 700, idealHeight: 780)
+        .onAppear {
+            whiteStripped = stripped.map(Heatmap.whitened)
+            whiteOriginal = original.map(Heatmap.whitened)
+        }
     }
 
     static func wrap(_ d: Double) -> Double { var d = d.truncatingRemainder(dividingBy: 360); if d > 180 { d -= 360 }; if d < -180 { d += 360 }; return d }
