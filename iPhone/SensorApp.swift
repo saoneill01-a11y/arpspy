@@ -24,6 +24,15 @@ struct SensorApp: App {
                 .environmentObject(archive)
                 .environmentObject(router)
                 .onAppear { Router.shared = router }
+                // A heatmap file sent from the Mac (AirDrop, Files, Mail).
+                .onOpenURL { url in
+                    guard url.pathExtension.lowercased() == HeatmapFile.fileExtension else { return }
+                    let ok = url.startAccessingSecurityScopedResource()
+                    defer { if ok { url.stopAccessingSecurityScopedResource() } }
+                    if let d = try? Data(contentsOf: url), let id = try? PhoneHeatmapStore.shared.importFile(d) {
+                        router.path = [.heatmap(id)]
+                    }
+                }
         }
     }
 }
@@ -31,6 +40,7 @@ struct SensorApp: App {
 enum Route: Hashable {
     case sensor(UUID)
     case scan(UUID)
+    case heatmap(UUID)
     case about
 }
 

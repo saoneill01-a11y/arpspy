@@ -97,3 +97,47 @@ final class HeatmapFileTests: XCTestCase {
         XCTAssertEqual(HeatmapFile.fileName(HeatSurvey(name: "Floor 1/2")), "Floor 1-2.arpheatmap")
     }
 }
+
+/// Walk-and-measure maths shared with the iPhone.
+final class WalkMathTests: XCTestCase {
+    func testAlignFitTurnsAndMoves() {
+        // The real mapping: turned 90°, 50 px per metre, moved to (400, 300).
+        let truth = HeatAlign(angle: .pi / 2, pixelsPerMetre: 50, tx: 400, ty: 300)
+        let world = [(x: 0.0, z: 0.0), (x: 4.0, z: 1.0), (x: -2.0, z: 3.0)]
+        let pairs = world.map { w in (world: w, plan: truth.pixel(x: w.x, z: w.z)) }
+        let fit = HeatAlign.fit(pairs, pixelsPerMetre: 50)
+        XCTAssertEqual(fit.angle, .pi / 2, accuracy: 1e-9)
+        let p = fit.pixel(x: 10, z: -5), q = truth.pixel(x: 10, z: -5)
+        XCTAssertEqual(p.x, q.x, accuracy: 1e-6); XCTAssertEqual(p.y, q.y, accuracy: 1e-6)
+        // One tap only moves, keeping the angle given.
+        let one = HeatAlign.fit([pairs[1]], pixelsPerMetre: 50, keepAngle: .pi / 2)
+        XCTAssertEqual(one.pixel(x: 4, z: 1).x, pairs[1].plan.x, accuracy: 1e-9)
+    }
+
+    func testGeoPixelsMercator() {
+        let g = HeatGeo(north: 40.001, south: 39.999, west: -100.002, east: -99.998)
+        let tl = g.pixel(lat: 40.001, lon: -100.002, width: 800, height: 600)
+        let br = g.pixel(lat: 39.999, lon: -99.998, width: 800, height: 600)
+        XCTAssertEqual(tl.x, 0, accuracy: 1e-6); XCTAssertEqual(tl.y, 0, accuracy: 1e-6)
+        XCTAssertEqual(br.x, 800, accuracy: 1e-6); XCTAssertEqual(br.y, 600, accuracy: 1e-6)
+        XCTAssertEqual(g.pixel(lat: 40, lon: -100, width: 800, height: 600).x, 400, accuracy: 1e-6)
+    }
+
+    func testSensorWiFiReading() throws {
+        let json = #"{"type":"wifi","seq":7,"took":2400,"aps":[{"b":"02:aa:bb:cc:dd:01","s":"Example-Office","r":-52,"c":36,"w":80,"g":"5","a":300},{"b":"02:aa:bb:cc:dd:02","s":"Example-Office","r":-70,"c":6,"w":20,"g":"2.4","a":9000},{"b":"02:aa:bb:cc:dd:03","s":"","r":-61,"c":37,"w":160,"g":"6","a":0}]}"#
+        let ev = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        let r = try XCTUnwrap(SensorWiFiReading(ev, arrived: Date(timeIntervalSince1970: 100)))
+        XCTAssertEqual(r.seq, 7)
+        XCTAssertEqual(r.readings.map(\.bssid), ["02:AA:BB:CC:DD:01", "02:AA:BB:CC:DD:03"])   // the stale one is left out
+        XCTAssertEqual(r.readings[0].band, "5 GHz"); XCTAssertEqual(r.readings[0].widthMHz, 80)
+        XCTAssertEqual(r.readings[1].band, "6 GHz")
+        XCTAssertEqual(r.middle.timeIntervalSince1970, 98.8, accuracy: 1e-6)
+    }
+
+    func testOldHeatmapsStillOpen() throws {
+        // A heatmap saved before geo/align existed.
+        let json = #"{"id":"6F1C2E64-0B0A-4D55-9A43-3C3B2F0E8B11","name":"Old","spots":[]}"#
+        let s = try JSONDecoder().decode(HeatSurvey.self, from: Data(json.utf8))
+        XCTAssertNil(s.geo); XCTAssertNil(s.align)
+    }
+}

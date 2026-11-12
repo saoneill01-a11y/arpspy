@@ -141,6 +141,43 @@ struct SensorRow: Equatable, Codable, Identifiable, Hashable {
     }
 }
 
+/// One Wi-Fi measurement from the sensor's survey mode (every second or two while `survey` runs).
+struct SensorWiFiReading {
+    var seq: Int
+    /// How long the sweep took (ms): the readings are from that window, ending `arrived`.
+    var took: Double
+    var arrived: Date
+    var readings: [HeatReading]
+    /// For each reading, how long before `arrived` the sensor last heard it (ms).
+    var ages: [Double]
+
+    /// Parses {"type":"wifi","seq":…,"took":…,"aps":[{"b","s","r","c","w","g","a"}]}. Readings older than the sweep
+    /// (cached by the adapter from an earlier sweep) are left out.
+    init?(_ ev: [String: Any], arrived: Date = Date()) {
+        guard let aps = ev["aps"] as? [[String: Any]] else { return nil }
+        seq = ev["seq"] as? Int ?? 0
+        took = (ev["took"] as? NSNumber)?.doubleValue ?? 0
+        self.arrived = arrived
+        var rs: [HeatReading] = [], ages: [Double] = []
+        for ap in aps {
+            guard let rssi = (ap["r"] as? NSNumber)?.intValue, rssi < 0, rssi > -120 else { continue }
+            let age = (ap["a"] as? NSNumber)?.doubleValue ?? 0
+            if took > 0, age > took + 1500 { continue }
+            let g = ap["g"] as? String ?? ""
+            let band = g == "6" ? "6 GHz" : g == "5" ? "5 GHz" : "2.4 GHz"
+            rs.append(HeatReading(ssid: (ap["s"] as? String ?? "").cleanedNetworkText(max: 64),
+                                  bssid: (ap["b"] as? String ?? "").uppercased(),
+                                  rssi: rssi, channel: (ap["c"] as? NSNumber)?.intValue ?? 0, band: band,
+                                  widthMHz: (ap["w"] as? NSNumber)?.intValue ?? 20))
+            ages.append(age)
+        }
+        readings = rs; self.ages = ages
+    }
+
+    /// Roughly when the sweep heard most of them: halfway through it.
+    var middle: Date { arrived.addingTimeInterval(-took / 2000) }
+}
+
 /// A finished scan from the sensor, handed to the app (`SensorLink.onResults`).
 struct SensorScanResult {
     var rows: [SensorRow]
@@ -182,6 +219,11 @@ final class SensorLink: NSObject, ObservableObject {
     @Published private(set) var note = ""
     /// What to do with a finished scan; returns the note to show ("128 devices in 19.4 s · shown in the main window").
     var onResults: ((SensorScanResult) -> String)?
+    /// Survey mode: each Wi-Fi measurement as it arrives.
+    var onWiFi: ((SensorWiFiReading) -> Void)?
+    /// Survey mode is running on the sensor.
+    @Published private(set) var surveying = false
+    @Published private(set) var surveyReadings = 0
 
     private var central: CBCentralManager?
     private var peripheral: CBPeripheral?
@@ -240,7 +282,7 @@ final class SensorLink: NSObject, ObservableObject {
         connectWatch?.cancel()
         if let p = peripheral { central?.cancelPeripheralConnection(p) }
         peripheral = nil; chars = [:]; key = nil; pending = nil; queue = []; claimInFlight = false; infoInFlight = false; retried = false
-        sensorName = ""; version = ""; ssid = ""; ip = ""; networks = []; note = ""; sensorID = ""
+        sensorName = ""; version = ""; ssid = ""; ip = ""; networks = []; note = ""; sensorID = ""; surveying = false
         if selected != nil { phase = .idle }
         selected = nil
     }
@@ -263,6 +305,14 @@ final class SensorLink: NSObject, ObservableObject {
     }
 
     func cancel() { send(["cmd": "cancel"]) }
+
+    /// Starts survey mode: the sensor measures nearby Wi-Fi over and over (`onWiFi`) until `stopSurvey`.
+    func startSurvey(intervalMs: Int = 0) {
+        surveyReadings = 0
+        surveying = true
+        send(["cmd": "survey", "intervalMs": intervalMs])
+    }
+    func stopSurvey() { send(["cmd": "cancel"]) }
     func refreshNetworks() { send(["cmd": "networks"]) }
 
     /// Stop owning this sensor: the next app to connect becomes its owner.
@@ -329,6 +379,7 @@ final class SensorLink: NSObject, ObservableObject {
             break   // handled by the claim's acknowledgement
         case "status":
             ssid = ev["ssid"] as? String ?? ""; ip = ev["ip"] as? String ?? ""
+            if let s = ev["surveying"] as? Bool { surveying = s }
             connectWatch?.cancel()
             if !isWorking { phase = .ready }
         case "networks":
@@ -336,6 +387,14 @@ final class SensorLink: NSObject, ObservableObject {
                 guard let s = $0["ssid"] as? String else { return nil }
                 return WiFi(ssid: s, signal: $0["signal"] as? Int ?? 0, secure: $0["secure"] as? Bool ?? true)
             }
+        case "wifi":
+            guard let r = SensorWiFiReading(ev) else { break }
+            surveying = true
+            surveyReadings += 1
+            onWiFi?(r)
+        case "surveyStopped":
+            surveying = false
+            if let t = ev["text"] as? String, !t.isEmpty { note = t }
         case "progress":
             phase = .working(ev["fraction"] as? Double ?? 0, ev["text"] as? String ?? "")
         case "devices":
@@ -351,6 +410,7 @@ final class SensorLink: NSObject, ObservableObject {
             send(["cmd": "status"])
         case "error":
             phase = .ready
+            surveying = false
             note = ev["text"] as? String ?? "The sensor reported a problem."
         case "released":
             SensorKeychain.delete(sensorID)

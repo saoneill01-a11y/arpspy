@@ -66,6 +66,10 @@ struct HeatSurvey: Codable, Identifiable, Hashable, Sendable {
     /// The network shown; nil = the one the Mac was joined to.
     var network: String? = nil
     var orgID: UUID? = nil
+    /// Where the plan is on Earth, when it's a map picture (iPhone GPS walks put spots on it).
+    var geo: HeatGeo? = nil
+    /// How the iPhone's room tracking lines up with the plan (iPhone LiDAR walks).
+    var align: HeatAlign? = nil
 
     static let blankSize = CGSize(width: 1600, height: 1000)
 
@@ -88,6 +92,8 @@ struct HeatSurvey: Codable, Identifiable, Hashable, Sendable {
         overlay = try c.decodeIfPresent(HeatOverlay.self, forKey: .overlay)
         network = try c.decodeIfPresent(String.self, forKey: .network)
         orgID = try c.decodeIfPresent(UUID.self, forKey: .orgID)
+        geo = try c.decodeIfPresent(HeatGeo.self, forKey: .geo)
+        align = try c.decodeIfPresent(HeatAlign.self, forKey: .align)
     }
 
     /// The network to show: the chosen one, else the one joined at most spots.
@@ -233,26 +239,6 @@ struct HeatFinding: Hashable, Sendable {
 enum Heatmap {
     /// What "no signal" counts as when a spot didn't hear the network at all.
     static let silent = -95.0
-
-    /// Several scans at one spot → one reading per access point (average dBm), strongest first.
-    static func average(_ scans: [[NearbyNetwork]]) -> [HeatReading] {
-        var groups: [String: [NearbyNetwork]] = [:]
-        var order: [String] = []
-        for scan in scans {
-            for n in scan {
-                let key = n.bssid.isEmpty ? "\(n.ssid)|\(n.channel)" : n.bssid
-                if groups[key] == nil { order.append(key) }
-                groups[key, default: []].append(n)
-            }
-        }
-        return order.compactMap { key -> HeatReading? in
-            guard let list = groups[key], let last = list.last else { return nil }
-            let avg = Double(list.reduce(0) { $0 + $1.rssi }) / Double(list.count)
-            return HeatReading(ssid: last.ssid, bssid: last.bssid, rssi: Int(avg.rounded()), channel: last.channel,
-                               band: last.band, widthMHz: last.widthMHz)
-        }
-        .sorted { $0.rssi > $1.rssi }
-    }
 
     /// Two networks share air when their channels overlap in the same band.
     static func overlaps(_ a: HeatReading, _ b: HeatReading) -> Bool {
@@ -701,5 +687,75 @@ enum HeatmapFile {
     static func fileName(_ survey: HeatSurvey) -> String {
         let safe = String(survey.name.map { "/:\\?%*|\"<>".contains($0) ? "-" : $0 }).trimmingCharacters(in: .whitespaces)
         return (safe.isEmpty ? "Heatmap" : safe) + "." + fileExtension
+    }
+}
+
+enum HeatImage {
+    /// The grid as a picture (one pixel per cell; shown scaled up and smoothed).
+    static func make(_ g: HeatGrid, mode: HeatMode, opacity: Double = 0.62) -> CGImage? {
+        var px = [UInt8](repeating: 0, count: g.cols * g.rows * 4)
+        for i in 0..<(g.cols * g.rows) {
+            guard let v = g.values[i] else { continue }
+            let c = Heatmap.color(Heatmap.level(v, mode: mode))
+            let a = g.alpha[i] * opacity
+            px[i * 4] = UInt8(c.r * a * 255); px[i * 4 + 1] = UInt8(c.g * a * 255); px[i * 4 + 2] = UInt8(c.b * a * 255)
+            px[i * 4 + 3] = UInt8(a * 255)
+        }
+        guard let provider = CGDataProvider(data: Data(px) as CFData) else { return nil }
+        return CGImage(width: g.cols, height: g.rows, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: g.cols * 4,
+                       space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+}
+
+/// The edges of a map picture (Apple Maps pictures are Web Mercator), so a GPS position becomes a plan pixel.
+struct HeatGeo: Codable, Hashable, Sendable {
+    var north: Double, south: Double, west: Double, east: Double
+
+    private static func mercY(_ lat: Double) -> Double { log(tan(.pi / 4 + lat * .pi / 360)) }
+
+    /// Plan pixels for a latitude/longitude on a plan `width` × `height` pixels.
+    func pixel(lat: Double, lon: Double, width: Double, height: Double) -> (x: Double, y: Double) {
+        let x = (lon - west) / (east - west) * width
+        let y = (Self.mercY(north) - Self.mercY(lat)) / (Self.mercY(north) - Self.mercY(south)) * height
+        return (x, y)
+    }
+}
+
+/// Room tracking (metres on the floor: x to the right, z towards you, from where tracking started) → plan pixels:
+/// turn by `angle`, scale by `pixelsPerMetre`, then move by (tx, ty).
+struct HeatAlign: Codable, Hashable, Sendable {
+    var angle: Double = 0
+    var pixelsPerMetre: Double
+    var tx: Double = 0
+    var ty: Double = 0
+
+    func pixel(x: Double, z: Double) -> (x: Double, y: Double) {
+        let c = cos(angle), s = sin(angle)
+        return ((c * x - s * z) * pixelsPerMetre + tx, (s * x + c * z) * pixelsPerMetre + ty)
+    }
+
+    /// The best turn and move (scale fixed) that puts the tracked points on the places tapped on the plan.
+    /// One pair only moves (keeping `angle`); two or more also turn.
+    static func fit(_ pairs: [(world: (x: Double, z: Double), plan: (x: Double, y: Double))],
+                    pixelsPerMetre k: Double, keepAngle: Double = 0) -> HeatAlign {
+        guard !pairs.isEmpty else { return HeatAlign(angle: keepAngle, pixelsPerMetre: k) }
+        let n = Double(pairs.count)
+        let wx = pairs.map(\.world.x).reduce(0, +) / n, wz = pairs.map(\.world.z).reduce(0, +) / n
+        let px = pairs.map(\.plan.x).reduce(0, +) / n, py = pairs.map(\.plan.y).reduce(0, +) / n
+        var angle = keepAngle
+        if pairs.count >= 2 {
+            var sxx = 0.0, sxy = 0.0
+            for p in pairs {
+                let a = (p.world.x - wx, p.world.z - wz), b = (p.plan.x - px, p.plan.y - py)
+                sxx += a.0 * b.0 + a.1 * b.1
+                sxy += a.0 * b.1 - a.1 * b.0
+            }
+            if sxx != 0 || sxy != 0 { angle = atan2(sxy, sxx) }
+        }
+        var al = HeatAlign(angle: angle, pixelsPerMetre: k)
+        let centre = al.pixel(x: wx, z: wz)
+        al.tx = px - centre.x; al.ty = py - centre.y
+        return al
     }
 }

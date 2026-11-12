@@ -62,6 +62,7 @@ targets:
       - ArpSpy/Model/NetworkText.swift
       - ArpSpy/Scan/OUIDatabase.swift
       - ArpSpy/Scan/Ports.swift
+      - ArpSpy/Heatmap/HeatmapCore.swift
       - path: ArpSpy/Resources/oui.csv
         buildPhase: resources
     info:
@@ -74,6 +75,20 @@ targets:
         LSApplicationCategoryType: public.app-category.utilities
         NSHumanReadableCopyright: © 2026 Sean O'Neill. Free software under the GNU GPL v3.
         NSBluetoothAlwaysUsageDescription: ARPradar uses Bluetooth to talk to your ARPradar Sensor, which runs the network scans.
+        NSCameraUsageDescription: ARPradar uses the camera and LiDAR to draw floor plans and to know where you are while you walk a Wi-Fi heatmap.
+        NSLocationWhenInUseUsageDescription: ARPradar uses your location only while you walk an outdoor Wi-Fi heatmap, to place each measurement on the map.
+        UIRequiredDeviceCapabilities: [arm64]
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: ARPradar Heatmap
+            LSHandlerRank: Owner
+            LSItemContentTypes: [com.arpradar.heatmap]
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.arpradar.heatmap
+            UTTypeDescription: ARPradar Heatmap
+            UTTypeConformsTo: [public.json, public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [arpheatmap]
+        LSSupportsOpeningDocumentsInPlace: false
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         # The only encryption is Apple's own (CryptoKit) protecting the Bluetooth link to the sensor.

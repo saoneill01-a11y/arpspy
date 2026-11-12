@@ -1273,24 +1273,6 @@ struct HeatmapView: View {
 
 // MARK: - Drawing
 
-enum HeatImage {
-    /// The grid as a picture (one pixel per cell; shown scaled up and smoothed).
-    static func make(_ g: HeatGrid, mode: HeatMode, opacity: Double = 0.62) -> CGImage? {
-        var px = [UInt8](repeating: 0, count: g.cols * g.rows * 4)
-        for i in 0..<(g.cols * g.rows) {
-            guard let v = g.values[i] else { continue }
-            let c = Heatmap.color(Heatmap.level(v, mode: mode))
-            let a = g.alpha[i] * opacity
-            px[i * 4] = UInt8(c.r * a * 255); px[i * 4 + 1] = UInt8(c.g * a * 255); px[i * 4 + 2] = UInt8(c.b * a * 255)
-            px[i * 4 + 3] = UInt8(a * 255)
-        }
-        guard let provider = CGDataProvider(data: Data(px) as CFData) else { return nil }
-        return CGImage(width: g.cols, height: g.rows, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: g.cols * 4,
-                       space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                       provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
-    }
-}
-
 /// The picture Export PNG saves: the plan, the map, the spots, AP markers and a legend.
 private struct HeatExport: View {
     let survey: HeatSurvey

@@ -4,6 +4,26 @@ import CoreWLAN
 
 // Mac-only parts of the heatmap (the shared data and math are in HeatmapCore.swift).
 extension Heatmap {
+    /// Several scans at one spot → one reading per access point (average dBm), strongest first.
+    static func average(_ scans: [[NearbyNetwork]]) -> [HeatReading] {
+        var groups: [String: [NearbyNetwork]] = [:]
+        var order: [String] = []
+        for scan in scans {
+            for n in scan {
+                let key = n.bssid.isEmpty ? "\(n.ssid)|\(n.channel)" : n.bssid
+                if groups[key] == nil { order.append(key) }
+                groups[key, default: []].append(n)
+            }
+        }
+        return order.compactMap { key -> HeatReading? in
+            guard let list = groups[key], let last = list.last else { return nil }
+            let avg = Double(list.reduce(0) { $0 + $1.rssi }) / Double(list.count)
+            return HeatReading(ssid: last.ssid, bssid: last.bssid, rssi: Int(avg.rounded()), channel: last.channel,
+                               band: last.band, widthMHz: last.widthMHz)
+        }
+        .sorted { $0.rssi > $1.rssi }
+    }
+
     /// UniFi access points on a network map, by access point key: a radio is the AP's when its BSSID is the AP's MAC
     /// or numbered from it (`sameAP`). Without `groups`, by `apKey` of the AP's MAC.
     static func uniFiNames(_ map: NetMap?, groups: [String: String] = [:]) -> [String: String] {

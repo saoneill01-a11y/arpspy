@@ -39,6 +39,8 @@ struct HomeView: View {
                     Text("The first time you connect, this iPhone becomes the sensor’s owner. Other phones and computers can’t use it until you release it.")
                 }
 
+                HeatmapSection()
+
                 Section("Past scans") {
                     if archive.scans.isEmpty {
                         Text("Scans you run show up here.").foregroundStyle(.secondary)
@@ -61,6 +63,7 @@ struct HomeView: View {
                 case .sensor(let id): SensorScreen(id: id)
                 case .scan(let id):
                     if let scan = archive.scan(id) { ResultsView(scan: scan) } else { Text("This scan was deleted.") }
+                case .heatmap(let id): HeatmapScreen(id: id)
                 case .about: AboutView()
                 }
             }
@@ -75,7 +78,7 @@ struct HomeView: View {
         .onAppear { link.start() }
         .onChange(of: router.path) { _, path in
             // Back on the home screen: hang up, so the sensor is free and the battery isn't used.
-            if !path.contains(where: { if case .sensor = $0 { return true } else { return false } }) { link.select(nil) }
+            if path.isEmpty { link.select(nil) }
         }
     }
 }
