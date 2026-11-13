@@ -31,7 +31,7 @@ echo "Building and signing…"
 rm -rf "$OUT/Build/Products/Release/ARPradar.app"
 xcodebuild -scheme ArpSpy -configuration Release -destination 'generic/platform=macOS' -derivedDataPath "$OUT" -quiet \
   DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" \
-  OTHER_CODE_SIGN_FLAGS=--timestamp build
+  CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO OTHER_CODE_SIGN_FLAGS=--timestamp build
 APP="$OUT/Build/Products/Release/ARPradar.app"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
