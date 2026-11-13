@@ -5,6 +5,10 @@ options:
   deploymentTarget:
     macOS: "14.0"
     iOS: "17.0"
+settings:
+  base:
+    # Cyber Support IT LLC's Apple developer team (public: it's in every signed copy).
+    DEVELOPMENT_TEAM: Z6U97H9M93
 targets:
   ArpSpy:
     type: application
